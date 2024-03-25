@@ -28,6 +28,8 @@ __all__ = [
 ]
 
 MODELS.register_module(name="Linear", module=nn.Linear)
+
+
 @MODELS.register_module()
 class TeMPOBlockLinear(ONNBaseLayer):
     """
@@ -157,36 +159,6 @@ class TeMPOBlockLinear(ONNBaseLayer):
 
         return instance
 
-    def sync_parameters(self, src: str = "weight") -> None:
-        """
-        description: synchronize all parameters from the source parameters
-        """
-        if src == "weight":
-            self.build_phase_from_weight(self.weight)
-
-        elif src == "phase":
-            if self.w_bit < 16:
-                phase = self.phase_quantizer(self.phase.data)
-            else:
-                phase = self.phase
-            if self.phase_noise_std > 1e-5:
-                ### phase_S is assumed to be protected
-                phase = add_gaussian_noise(
-                    phase,
-                    0,
-                    self.phase_noise_std,
-                    trunc_range=(-2 * self.phase_noise_std, 2 * self.phase_noise_std),
-                )
-
-            self.build_weight_from_phase(
-                phase
-                # self.S_scale,
-            )
-        elif src == "voltage":
-            NotImplementedError
-        else:
-            raise NotImplementedError
-
     def MAC(self) -> int:
         # MAC for single-batch inference
         MAC = self.in_features_pad * self.out_features_pad
@@ -209,9 +181,6 @@ class TeMPOBlockLinear(ONNBaseLayer):
 
         return cycles
 
-    def set_temp_drift_noise(self, delta_T: float = 0) -> None:
-        raise NotImplementedError
-
     def forward(self, x: Tensor) -> Tensor:
         if self.in_bit < 16:
             x = self.input_quantizer(x)
@@ -232,11 +201,11 @@ class TeMPOBlockLinear(ONNBaseLayer):
         return x
 
     def extra_repr(self):
-        s = ('{in_features}, {out_features}')
+        s = "{in_features}, {out_features}"
         if self.bias is None:
-            s += ', bias=False'
+            s += ", bias=False"
         if self.miniblock is not None:
-            s += ', miniblock={miniblock}'
+            s += ", miniblock={miniblock}"
         if self.mode is not None:
-            s += ', mode={mode}'
+            s += ", mode={mode}"
         return s.format(**self.__dict__)
