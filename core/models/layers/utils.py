@@ -6,7 +6,6 @@ LastEditors: ScopeX-ASU jiaqigu@asu.edu
 LastEditTime: 2023-10-04 16:30:46
 """
 
-import math
 import os
 import random
 import sys
@@ -14,11 +13,9 @@ from functools import lru_cache
 from typing import Callable, List, Optional, Tuple, Union
 
 import einops
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import tqdm
-from matplotlib import cm
 from pyutils.compute import (
     gen_boolean_mask,
     gen_gaussian_filter2d,
@@ -30,12 +27,6 @@ from pyutils.general import logger
 from pyutils.torch_train import set_torch_deterministic
 from torch import Tensor
 from torch.types import Device, _size
-from torchonn.op.mzi_op import (
-    checkerboard_to_vector,
-    upper_triangle_to_vector,
-    vector_to_checkerboard,
-    vector_to_upper_triangle,
-)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../.."))
 
@@ -44,6 +35,9 @@ __all__ = [
     "STE",
     "mzi_out_diff_to_phase",
     "mzi_phase_to_out_diff",
+    "PhaseVariationScheduler",
+    "GlobalTemperatureScheduler",
+    "CrosstalkScheduler",
     "DeterministicCtx",
     "calculate_grad_hessian",
 ]
@@ -98,54 +92,6 @@ def mzi_phase_to_out_diff(x: Tensor) -> Tensor:
         Tensor: output port power difference of the 1x2 MZI
     """
     return torch.sin(x)
-
-
-def apply_remap_weight(self, weight, col_ind, require_size=[4, 4, 8, 8]):
-    ## FIXME canonly handle one to one remapping..
-    weight = self.layer_weight_partition_chunk(
-        weight, require_size=require_size
-    )  # [b0, b1, R, C, K, K]
-    # print(self.weight.shape, weight.shape, self.col_ind.shape)
-    weight = weight.flatten(0, 1)[
-        torch.arange(weight.shape[0] * weight.shape[1])[..., None],
-        col_ind.flatten(0, 1),
-    ].reshape(weight.shape)
-    weight = self.layer_weight_merge_chunk(weight)[
-        : self.grid_dim_y, : self.grid_dim_x
-    ]  # [P,Q,K,K]
-    return weight
-
-
-def unapply_remap_weight(self, weight, col_ind, require_size=[4, 4, 8, 8]):
-    ## FIXME canonly handle one to one remapping..
-    weight = self.layer_weight_partition_chunk(
-        weight, require_size=require_size
-    )  # [b0, b1, R, C, K, K]
-    weight.flatten(0, 1)[
-        torch.arange(weight.shape[0] * weight.shape[1])[..., None],
-        col_ind.flatten(0, 1),
-    ] = weight.flatten(0, 1).clone()
-    weight = self.layer_weight_merge_chunk(weight)[
-        : self.grid_dim_y, : self.grid_dim_x
-    ]  # [P,Q,K,K]
-    return weight
-
-
-def apply_remap_noise(noise_map, col_ind):
-    ## noise_map: [b0, b1, R, C, K, K]
-    ## col_ind: [b0, b1, R]
-    ## FIXME canonly handle one to one remapping..
-
-    # print(noise_map)
-    ## [0, 1, 1, 2] means W0 -> T0, W1 -> T1, W2 -> T1, W3 -> T2
-    noise_map = noise_map.flatten(0, 1)[
-        torch.arange(noise_map.shape[0] * noise_map.shape[1])[..., None],
-        col_ind.flatten(0, 1),
-    ].reshape(noise_map.shape)
-    # print(noise_map)
-    # exit(0)
-
-    return noise_map  # [b0, b1 ,R, C, K, K]
 
 
 class PhaseVariationScheduler(object):
