@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 from pyutils.config import configs
 from pyutils.datasets import get_dataset
-from pyutils.loss import AdaptiveLossSoft, KLLossMixed
+from pyutils.loss import AdaptiveLossSoft, KDLoss, DKDLoss, CrossEntropyLossSmooth
 from pyutils.lr_scheduler.warmup_cosine_restart import CosineAnnealingWarmupRestarts
 from pyutils.optimizer.sam import SAM
 from pyutils.optimizer.dadapt_adam import DAdaptAdam
@@ -348,12 +348,24 @@ def make_criterion(name: str = None, cfg=None) -> nn.Module:
         criterion = nn.L1Loss()
     elif name == "ce":
         criterion = nn.CrossEntropyLoss()
+    elif name == "ce_smooth":
+        criterion = CrossEntropyLossSmooth(label_smoothing=getattr(cfg, "label_smoothing", 0.1))
     elif name == "adaptive":
         criterion = AdaptiveLossSoft(alpha_min=-1.0, alpha_max=1.0)
-    elif name == "mixed_kl":
-        criterion = KLLossMixed(
-            T=getattr(cfg, "T", 3),
-            alpha=getattr(cfg, "alpha", 0.9),
+    elif name == "kd":
+        criterion = KDLoss(
+            T=getattr(cfg, "T", 2),
+            ce_weight=getattr(cfg, "ce_weight", 0),
+            kd_weight=getattr(cfg, "kd_weight", 0.9),
+            logit_stand=getattr(cfg, "logit_stand", False),
+        )
+    elif name == "dkd":
+        criterion = DKDLoss(
+            T=getattr(cfg, "T", 2),
+            ce_weight=getattr(cfg, "ce_weight", 0),
+            kd_alpha=getattr(cfg, "kd_alpha", 1),
+            kd_beta=getattr(cfg, "kd_beta", 1),
+            logit_stand=getattr(cfg, "logit_stand", False),
         )
     else:
         raise NotImplementedError(name)

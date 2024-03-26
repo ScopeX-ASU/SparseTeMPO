@@ -67,13 +67,10 @@ def train(
             for name, config in aux_criterions.items():
                 aux_criterion, weight = config
                 aux_loss = 0
-                if name == "kl_distill" and teacher is not None:
+                if name in {"kd", "dkd"} and teacher is not None:
                     with torch.no_grad():
                         teacher_scores = teacher(data).data.detach()
-                    T = 2
-                    p = F.log_softmax(output / T, dim=1)
-                    q = F.softmax(teacher_scores / T, dim=1)
-                    aux_loss = F.kl_div(p, q, reduction="batchmean") * (T**2) * weight
+                    aux_loss = weight * aux_criterion(output, teacher_scores, target)
                 elif name == "mse_distill" and teacher is not None:
                     with torch.no_grad():
                         teacher(data).data.detach()
@@ -95,7 +92,7 @@ def train(
                 loss = loss + aux_loss
                 aux_meters[name].update(aux_loss)
         pred = output.data.max(1)[1]
-        correct += pred.eq(target.data).cpu().sum()
+        correct += pred.eq(target.data).sum().item
 
         optimizer.zero_grad()
         grad_scaler.scale(loss).backward()
@@ -126,14 +123,14 @@ def train(
 
     scheduler.step()
     avg_class_loss = class_meter.avg
-    accuracy = 100.0 * correct.to(torch.float32) / total_data
+    accuracy = 100.0 * correct / total_data
     lg.info(
         f"Train class Loss: {avg_class_loss:.4e}, Accuracy: {correct}/{total_data} ({accuracy:.2f}%)"
     )
     mlflow.log_metrics(
         {
             "train_class": avg_class_loss,
-            "train_acc": accuracy.item(),
+            "train_acc": accuracy,
             "lr": get_learning_rate(optimizer),
         },
         step=epoch,
@@ -168,16 +165,16 @@ def validate(
                 val_loss = criterion(output, target)
                 class_meter.update(val_loss.item())
                 pred = output.data.max(1)[1]
-                correct += pred.eq(target.data).cpu().sum()
+                correct += pred.eq(target.data).sum().item()
 
     loss_vector.append(class_meter.avg)
-    accuracy = 100.0 * correct.to(torch.float32) / len(validation_loader.dataset)
+    accuracy = 100.0 * correct / len(validation_loader.dataset)
     accuracy_vector.append(accuracy)
     lg.info(
         f"\nValidation set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(validation_loader.dataset)} ({accuracy:.2f}%)\n"
     )
     mlflow.log_metrics(
-        {"val_loss": class_meter.avg, "val_acc": accuracy.item()}, step=epoch
+        {"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch
     )
 
 
@@ -211,10 +208,10 @@ def test(
                 val_loss = criterion(output, target)
                 class_meter.update(val_loss.item())
                 pred = output.data.max(1)[1]
-                correct += pred.eq(target.data).cpu().sum()
+                correct += pred.eq(target.data).sum().item()
 
     loss_vector.append(class_meter.avg)
-    accuracy = 100.0 * correct.to(torch.float32) / len(test_loader.dataset)
+    accuracy = 100.0 * correct / len(test_loader.dataset)
     accuracy_vector.append(accuracy)
 
     lg.info(
@@ -222,7 +219,7 @@ def test(
     )
 
     mlflow.log_metrics(
-        {"test_loss": class_meter.avg, "test_acc": accuracy.item()}, step=epoch
+        {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
     )
 
 
