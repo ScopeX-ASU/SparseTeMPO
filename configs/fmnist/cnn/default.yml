@@ -45,6 +45,7 @@ run:
   grad_clip: False
   max_grad_value: 1
   do_distill: False
+  compile: False
 
 quantize:
   weight_bit: 32

@@ -92,7 +92,7 @@ def train(
                 loss = loss + aux_loss
                 aux_meters[name].update(aux_loss)
         pred = output.data.max(1)[1]
-        correct += pred.eq(target.data).sum().item
+        correct += pred.eq(target.data).sum().item()
 
         optimizer.zero_grad()
         grad_scaler.scale(loss).backward()
@@ -337,6 +337,7 @@ def main() -> None:
 
     lossv, accv = [0], [0]
     epoch = 0
+    
     try:
         lg.info(
             f"Experiment {configs.run.experiment} ({experiment.experiment_id}) starts. Run ID: ({mlflow.active_run().info.run_id}). PID: ({os.getpid()}). PPID: ({os.getppid()}). Host: ({os.uname()[1]})"
@@ -378,6 +379,12 @@ def main() -> None:
                 with amp.autocast(grad_scaler._enabled):
                     model.load_from_teacher(teacher)
 
+        ## compile models
+        if getattr(configs.run, "compile", False):
+            model = torch.compile(model)
+            if teacher is not None:
+                teacher = torch.compile(teacher)
+
         for epoch in range(1, int(configs.run.n_epochs) + 1):
             train(
                 model,
@@ -417,7 +424,7 @@ def main() -> None:
                 fp16=grad_scaler._enabled,
             )
             saver.save_model(
-                model,
+                getattr(model, "_orig_mod", model), # remove compiled wrapper
                 accv[-1],
                 epoch=epoch,
                 path=checkpoint,
