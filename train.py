@@ -192,7 +192,7 @@ def test(
     model.eval()
     val_loss = 0
     correct = 0
-    class_meter = AverageMeter("mse")
+    class_meter = AverageMeter("ce")
     with amp.autocast(enabled=fp16):
         with torch.no_grad():
             for i, (data, target) in enumerate(test_loader):
