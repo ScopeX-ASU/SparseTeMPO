@@ -14,80 +14,6 @@ from pyutils.general import logger
 __all__ = ["DSTScheduler", "CosineDecay", "LinearDecay"]
 
 
-def add_sparse_args(parser):
-    parser.add_argument(
-        "--growth",
-        type=str,
-        default="random",
-        help="Growth mode. Choose from: momentum, random, and momentum_neuron.",
-    )
-    parser.add_argument(
-        "--death",
-        type=str,
-        default="magnitude",
-        help="Death mode / pruning mode. Choose from: magnitude, SET, threshold, CS_death.",
-    )
-    parser.add_argument(
-        "--redistribution",
-        type=str,
-        default="none",
-        help="Redistribution mode. Choose from: momentum, magnitude, nonzeros, or none.",
-    )
-    parser.add_argument(
-        "--death-rate", type=float, default=0.50, help="The pruning rate / death rate."
-    )
-    parser.add_argument(
-        "--density",
-        type=float,
-        default=0.05,
-        help="The density of the overall sparse network.",
-    )
-    parser.add_argument(
-        "--final_density",
-        type=float,
-        default=0.05,
-        help="The density of the overall sparse network.",
-    )
-    parser.add_argument(
-        "--sparse", action="store_true", help="Enable sparse mode. Default: True."
-    )
-    parser.add_argument(
-        "--snip", action="store_true", help="Enable snip initialization. Default: True."
-    )
-    parser.add_argument(
-        "--fix",
-        action="store_true",
-        help="Fix topology during training. Default: True.",
-    )
-    parser.add_argument(
-        "--sparse_init", type=str, default="uniform", help="sparse initialization"
-    )
-    parser.add_argument(
-        "--reset",
-        action="store_true",
-        help="Fix topology during training. Default: True.",
-    )
-    parser.add_argument(
-        "--update_frequency",
-        type=int,
-        default=100,
-        metavar="N",
-        help="how many iterations to train between mask update",
-    )
-
-
-def prRed(skk):
-    print("\033[91m{}\033[00m".format(skk))
-
-
-def prGreen(skk):
-    print("\033[92m{}\033[00m".format(skk))
-
-
-def prYellow(skk):
-    print("\033[93m{}\033[00m".format(skk))
-
-
 class CosineDecay(object):
     def __init__(self, death_rate, T_max, eta_min=0.005, last_epoch=-1):
         self.sgd = optim.SGD(
@@ -169,7 +95,9 @@ class DSTScheduler(object):
 
         growth_modes = ["random", "momentum", "momentum_neuron", "gradient"]
         if growth_mode not in growth_modes:
-            raise ValueError(f"Growth mode expects {growth_modes}, but got {growth_mode}.")
+            raise ValueError(
+                f"Growth mode expects {growth_modes}, but got {growth_mode}."
+            )
 
         self.args = args
         self.loader = train_loader
@@ -457,10 +385,14 @@ class DSTScheduler(object):
         )
 
         self.gather_statistics()
-        logger.info("Scale up initialized weights by (weight_count/nonzeros) to maintain the same variance")
+        logger.info(
+            "Scale up initialized weights by (weight_count/nonzeros) to maintain the same variance"
+        )
         for name in self.masks:
-            self.params[name].data.mul_(self.params[name].numel()/self.name2nonzeros[name])
-        
+            self.params[name].data.mul_(
+                self.params[name].numel() / self.name2nonzeros[name]
+            )
+
         params = {name: m.numel() for name, m in self.masks.items()}
         logger.info(f"Zero counts:\n\t{self.name2zeros}")
         logger.info(f"Nonzero counts:\n\t{self.name2nonzeros}")
@@ -748,11 +680,6 @@ class DSTScheduler(object):
         logger.info("Death rate: {0}\n".format(self.death_rate))
 
     def print_structure_mask(self):
-
-        prYellow("=" * 100)
-        prYellow("Mask INFO")
-        prYellow("=" * 100)
-
         mlp_total_size = 0
         att_total_size = 0
         mlp_sparse_size = 0
@@ -762,7 +689,6 @@ class DSTScheduler(object):
             mlp_total_size += weight.numel()
             mlp_sparse_size += (weight != 0).sum().int().item()
 
-        prYellow("-" * 100)
         for name, weight in self.atten_masks.items():
             print(
                 "{} | {}/{} | shape:{}".format(
@@ -772,8 +698,7 @@ class DSTScheduler(object):
             att_total_size += weight.numel()
             att_sparse_size += (weight != 0).sum().int().item()
 
-        prYellow("-" * 100)
-        prYellow(
+        logger.info(
             "* (Total parameters under density level of mlp [{}/{:.4f}] att [{}/{:.4f}])".format(
                 self.args.other_density,
                 mlp_sparse_size / mlp_total_size,
@@ -781,7 +706,6 @@ class DSTScheduler(object):
                 att_sparse_size / att_total_size,
             )
         )
-        prYellow("-" * 100)
 
     def update_fired_masks(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:
