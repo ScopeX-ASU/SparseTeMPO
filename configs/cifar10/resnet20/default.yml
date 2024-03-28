@@ -80,6 +80,8 @@ model:
     type: ReLU
     inplace: True
 
+dst_scheduler: null
+
 debug:
   verbose: 1
 

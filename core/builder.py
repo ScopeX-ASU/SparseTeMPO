@@ -41,6 +41,7 @@ __all__ = [
     "make_optimizer",
     "make_scheduler",
     "make_criterion",
+    "make_dst_scheduler",
 ]
 
 
@@ -349,7 +350,9 @@ def make_criterion(name: str = None, cfg=None) -> nn.Module:
     elif name == "ce":
         criterion = nn.CrossEntropyLoss()
     elif name == "ce_smooth":
-        criterion = CrossEntropyLossSmooth(label_smoothing=getattr(cfg, "label_smoothing", 0.1))
+        criterion = CrossEntropyLossSmooth(
+            label_smoothing=getattr(cfg, "label_smoothing", 0.1)
+        )
     elif name == "adaptive":
         criterion = AdaptiveLossSoft(alpha_min=-1.0, alpha_max=1.0)
     elif name == "kd":
@@ -371,3 +374,36 @@ def make_criterion(name: str = None, cfg=None) -> nn.Module:
         raise NotImplementedError(name)
     return criterion
 
+
+def make_dst_scheduler(
+    optimizer: Optimizer, model: nn.Module, train_loader, configs=None
+) -> Scheduler:
+    cfg = configs.dst_scheduler
+    if cfg.death_rate_decay == "cosine":
+        death_rate_decay = CosineDecay(cfg.death_rate, T_max=len(train_loader) * configs.run.n_epochs)
+    else:
+        NotImplementedError
+    scheduler = DSTScheduler(
+        optimizer,
+        death_rate=cfg.death_rate,
+        growth_death_ratio=cfg.growth_death_ratio,
+        death_rate_decay=death_rate_decay,
+        death_mode=cfg.death_mode,
+        growth_mode=cfg.growth_mode,
+        redistribution_mode=cfg.redistribution_mode,
+        args=cfg,
+        spe_initial=cfg.spe_initial,
+        train_loader=train_loader,
+        pruning_type=cfg.pruning_type,
+        update_frequency=cfg.update_frequency,
+        T_max=cfg.T_max * len(train_loader) * configs.run.n_epochs,
+        device=model.device,
+    )
+    scheduler.add_module(
+        model,
+        density=cfg.density,
+        init_mode=cfg.init_mode,
+        pruning_type=cfg.pruning_type,
+        mask_path=None,
+    )
+    return scheduler
