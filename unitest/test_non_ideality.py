@@ -15,7 +15,7 @@ LastEditTime: 2024-03-23 14:01:47
 import torch
 from core.models.layers.tempo_linear import TeMPOBlockLinear
 from core.models.layers.tempo_conv2d import TeMPOBlockConv2d
-from core.models.layers.utils import CrosstalkScheduler
+from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
 
 
 def test_mode_switch():
@@ -48,5 +48,22 @@ def test_crosstalk():
     print(f"crosstalk coefficient k: {k}, N-MAE: {nmae}")
 
 
-test_mode_switch()
-test_crosstalk()
+def test_layer_power_calculator():
+    device = "cuda:0"
+    core_size = [8, 8]
+    layer = TeMPOBlockLinear(4, 4, miniblock=[2,3], device=device)
+    power_calculator = SparsityEnergyScheduler(core_size=[8, 8], threshold=15, pi_shift_power=30.0, device=device)
+    layer.switch_power_scheduler = power_calculator
+    weight0 = layer.build_weight(enable_noise=False, enable_ste=True)
+    weight1 = layer.weight
+    layer.weight.data.fill_(0)
+    weight2 = layer.weight
+    print(weight1)
+    print(weight2)
+    # layer.set_switch_power_count(True)
+    # power = layer.cal_switch_power(weight=None, src="phase")
+    # print(power)
+
+# test_mode_switch()
+# test_crosstalk()
+test_layer_power_calculator()

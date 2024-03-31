@@ -153,6 +153,9 @@ class ONNBaseLayer(nn.Module):
     def set_crosstalk_noise(self, flag: bool = False) -> None:
         self._enable_crosstalk = flag
 
+    def set_switch_power_count(self, flag: bool = False) -> None:
+        self._enable_power_count = flag
+
     def set_weight_bitwidth(self, w_bit: int) -> None:
         self.w_bit = w_bit
         self.phase_quantizer.set_bit(w_bit)
@@ -277,6 +280,26 @@ class ONNBaseLayer(nn.Module):
             raise NotImplementedError
 
         return x
+
+    def cal_switch_power(self, weight, src: str = "weight") -> None:
+
+        weight = weight if weight is not None else self.weight
+        
+        if (not self._enable_power_count) or self.switch_power_scheduler is None:
+            return None  #  don't count power affect on this layer
+
+        if src == "weight":
+            phase, S_scale = self.build_phase_from_weight(
+                weight
+            )  # we need to use this func to update S_scale and keep track of S_scale if weight gets updated.
+        elif src == "phase":
+            phase = weight
+        else:
+            raise NotImplementedError
+        
+        average_layer_switch_power = self.switch_power_scheduler.calculate_average_power(phase)
+
+        return average_layer_switch_power
 
     def build_weight_from_phase(self, phases: Tensor) -> Tensor:
         ## inplace operation: not differentiable operation using copy_

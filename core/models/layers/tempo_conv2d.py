@@ -21,7 +21,7 @@ from torch.nn.modules.utils import _pair
 from torch.types import Device, _size
 
 from .base_layer import ONNBaseLayer
-from .utils import CrosstalkScheduler, PhaseVariationScheduler
+from .utils import CrosstalkScheduler, PhaseVariationScheduler, SparsityEnergyScheduler
 
 __all__ = [
     "TeMPOBlockConv2d",
@@ -79,6 +79,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         in_bit: int = 32,
         phase_variation_scheduler: PhaseVariationScheduler = None,
         crosstalk_scheduler: CrosstalkScheduler = None,
+        switch_power_scheduler: SparsityEnergyScheduler = None,
         device: Device = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         ),
@@ -148,6 +149,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.set_enable_remap(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
+        self.switch_power_scheduler = switch_power_scheduler
 
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels).to(self.device))
