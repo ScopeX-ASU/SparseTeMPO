@@ -542,7 +542,7 @@ class DSTScheduler(object):
             death_rate * self.name2nonzeros[name]
         )  # pruning nonzeros
         if num_remove == 0.0:
-            return weight.data != 0.0
+            return mask
         # num_remove = math.ceil(self.name2death_rate[name]*self.name2nonzeros[name])
         num_zeros = self.name2zeros[name]
 
