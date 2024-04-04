@@ -1,7 +1,7 @@
 '''
 Date: 2024-03-23 14:04:00
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-03-24 15:48:25
+LastEditTime: 2024-04-04 14:24:22
 FilePath: /SparseTeMPO/unitest/test_non_ideality.py
 '''
 """
@@ -33,7 +33,7 @@ def test_mode_switch():
 def test_crosstalk():
     device = "cuda:0"
     k = 0.05
-    layer = TeMPOBlockLinear(4, 4, miniblock=[2,3], device=device)
+    layer = TeMPOBlockLinear(16, 16, miniblock=[4, 4, 4, 4], device=device)
     crosstalk_scheduler = CrosstalkScheduler(
         crosstalk_coupling_factor=k, interv_h=100, interv_v=100, device=device
     )
@@ -65,5 +65,5 @@ def test_layer_power_calculator():
     # print(power)
 
 # test_mode_switch()
-# test_crosstalk()
-test_layer_power_calculator()
+test_crosstalk()
+# test_layer_power_calculator()

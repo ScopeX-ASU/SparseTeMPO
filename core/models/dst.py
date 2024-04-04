@@ -412,8 +412,12 @@ class DSTScheduler(object):
                         # equation above.
                         rhs += n_ones
                         # Erdos-Renyi probability: epsilon * (n_in + n_out / n_in * n_out).
+                        if len(mask.shape) == 6:
+                            mask_shape = [mask.shape[0] * mask.shape[2], mask.shape[1] * mask.shape[3], mask.shape[4], mask.shape[5]]
+                        else:
+                            mask_shape = mask.shape
                         raw_probabilities[name] = (
-                            np.sum(mask.shape) / n_param
+                            np.sum(mask_shape) / n_param
                         ) ** erk_power_scale
                         # Note that raw_probabilities[mask] * n_param gives the individual
                         # elements of the divisor.

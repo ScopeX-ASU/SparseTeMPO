@@ -18,14 +18,14 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from pyutils.compute import add_gaussian_noise, partition_chunks
+from pyutils.compute import add_gaussian_noise
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import linear_sum_assignment
 from torch import Tensor, nn
 from torch.nn import Parameter, init
 from torch.types import Device
 
-from .utils import STE, mzi_out_diff_to_phase, mzi_phase_to_out_diff
+from .utils import STE, mzi_out_diff_to_phase, mzi_phase_to_out_diff, partition_chunks
 
 __all__ = ["ONNBaseLayer"]
 
@@ -41,20 +41,18 @@ class ONNBaseLayer(nn.Module):
         phase = torch.empty(
             self.grid_dim_y,
             self.grid_dim_x,
-            self.miniblock[0],
-            self.miniblock[1],
+            *self.miniblock,
             device=self.device,
         )
         weight = torch.empty(
             self.grid_dim_y,
             self.grid_dim_x,
-            self.miniblock[0],
-            self.miniblock[1],
+            *self.miniblock,
             device=self.device,
         )
         # TIA gain
         S_scale = torch.ones(
-            self.grid_dim_y, self.grid_dim_x, 1, device=self.device, dtype=torch.float32
+            size=list(weight.shape[:-2]) + [1], device=self.device, dtype=torch.float32
         )
 
         if mode == "weight":
@@ -105,7 +103,9 @@ class ONNBaseLayer(nn.Module):
                 value=0,
             )
             self.weight.data.copy_(
-                partition_chunks(weight, bs=self.miniblock).to(self.weight.device)
+                partition_chunks(weight, out_shape=self.weight.shape).to(
+                    self.weight.device
+                )
             )
 
         elif mode in {"phase"}:
@@ -284,7 +284,7 @@ class ONNBaseLayer(nn.Module):
     def cal_switch_power(self, weight, src: str = "weight") -> None:
 
         weight = weight if weight is not None else self.weight
-        
+
         if (not self._enable_power_count) or self.switch_power_scheduler is None:
             return None  #  don't count power affect on this layer
 
@@ -296,8 +296,10 @@ class ONNBaseLayer(nn.Module):
             phase = weight
         else:
             raise NotImplementedError
-        
-        average_layer_switch_power = self.switch_power_scheduler.calculate_average_power(phase)
+
+        average_layer_switch_power = (
+            self.switch_power_scheduler.calculate_average_power(phase)
+        )
 
         return average_layer_switch_power
 

@@ -13,15 +13,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from mmengine.registry import MODELS
-from pyutils.compute import add_gaussian_noise, gen_gaussian_noise, merge_chunks
 from pyutils.general import logger, print_stat
-from pyutils.quant.lsq import ActQuantizer_LSQ, WeightQuantizer_LSQ
+from pyutils.quant.lsq import ActQuantizer_LSQ
 from torch import Tensor, nn
-from torch.nn import Parameter, init
+from torch.nn import Parameter
 from torch.types import Device
 
 from .base_layer import ONNBaseLayer
-from .utils import CrosstalkScheduler, PhaseVariationScheduler, SparsityEnergyScheduler
+from .utils import CrosstalkScheduler, PhaseVariationScheduler, SparsityEnergyScheduler, WeightQuantizer_LSQ, merge_chunks
 
 __all__ = [
     "TeMPOBlockLinear",
@@ -39,7 +38,7 @@ class TeMPOBlockLinear(ONNBaseLayer):
     __constants__ = ["in_features", "out_features"]
     in_features: int
     out_features: int
-    miniblock: int
+    miniblock: Tuple[int,int,int,int]
     weight: Tensor
     mode: str
     __annotations__ = {"bias": Optional[Tensor]}
@@ -49,7 +48,7 @@ class TeMPOBlockLinear(ONNBaseLayer):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        miniblock: Tuple[int, int] = [4, 4],  # dim_y, dim_x, i.e., #cols, #rows
+        miniblock: Tuple[int, int,int,int] = [4, 4,4,4],  # [r, c, dim_y, dim_x]
         mode: str = "weight",
         w_bit: int = 32,
         in_bit: int = 32,
@@ -68,10 +67,10 @@ class TeMPOBlockLinear(ONNBaseLayer):
             f"Mode not supported. Expected one from (weight, usv, phase, voltage) but got {mode}."
         )
         self.miniblock = miniblock
-        self.grid_dim_x = int(np.ceil(self.in_features / miniblock[1]))
-        self.grid_dim_y = int(np.ceil(self.out_features / miniblock[0]))
-        self.in_features_pad = self.grid_dim_x * miniblock[1]
-        self.out_features_pad = self.grid_dim_y * miniblock[0]
+        self.grid_dim_x = int(np.ceil(self.in_features / miniblock[1] / miniblock[3]))
+        self.grid_dim_y = int(np.ceil(self.out_features / miniblock[0] / miniblock[2]))
+        self.in_features_pad = self.grid_dim_x * miniblock[1] * miniblock[3]
+        self.out_features_pad = self.grid_dim_y * miniblock[0] * miniblock[2]
 
         self.v_max = 10.8
         self.v_pi = 4.36
