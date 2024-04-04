@@ -73,6 +73,76 @@ def parameters_distribution(model):
     print("others  :{} /{:.2f}".format(others, others / total))
 
 
+class MultiMask(object):
+    def __init__(
+        self,
+        mask_cfg={"row_mask": [4, 4, 4, 1, 4, 1], "col_mask": [4, 4, 1, 4, 1, 4]},
+        device="cuda:0",
+    ) -> None:
+        self.mask_cfg = mask_cfg
+        self._masks = {
+            name: torch.ones(shape, device=device, dtype=torch.bool)
+            for name, shape in mask_cfg.items()
+        }
+
+        try:
+            mask = self.data
+        except:
+            raise ValueError("mask shapes should be able to multiplied together.")
+
+        self.total_elem = mask.numel()
+        self.shape = mask.shape
+
+    def __getitem__(self, key):
+        return self._masks[key]
+
+    @property
+    def data(self):
+        out = 1
+        for mask in self._masks.values():
+            out = out * mask
+        return out
+
+    def size(self):
+        return self.shape
+
+    def numel(self):
+        return self.total_elem
+
+    def num_nonzeros(self):
+        return self.sum().item()
+
+    def num_zeros(self):
+        return self.numel() - self.num_nonzeros()
+
+    def get_density(self):
+        return self.num_nonzeros() / self.numel()
+
+    def sum(self):
+        return self.data.sum()
+
+    def __mul__(self, other):
+        return self.data * other
+
+    def __rmul__(self, other):
+        return self.data * other
+
+    def __eq__(self, other):
+        return self.data == other
+
+    def __invert__(self):
+        return ~self.data
+
+    def __and__(self, other):
+        return self.data & other
+
+    def __or__(self, other):
+        return self.data | other
+
+    def __xor__(self, other):
+        return self.data ^ other
+
+
 class DSTScheduler(object):
     def __init__(
         self,
@@ -149,7 +219,7 @@ class DSTScheduler(object):
         mask_path=None,
     ):
 
-        if pruning_type in {"unstructure", "structure"}:
+        if pruning_type in {"unstructure"}:
             self.modules.append(module)
             index = len(self.masks)
             for name, m in module.named_modules():
@@ -158,9 +228,40 @@ class DSTScheduler(object):
                     index += 1
                     self.names.append(name_cur)
                     self.params[name_cur] = m.weight  # [p, q, k, k]
-                    self.masks[name_cur] = torch.zeros_like(m.weight.data)
+                    self.masks[name_cur] = MultiMask(
+                        {"elem_mask": m.weight.shape}, device=self.device
+                    )
+                    m.prune_mask = self.masks[
+                        name_cur
+                    ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
             logger.info(f"created pruning mask.")
             self.unstructure_init(mode=init_mode, density=density, mask_file=mask_path)
+            logger.info(f"initialized pruning mask.")
+        elif pruning_type in {"structure"}:
+            self.modules.append(module)
+            index = len(self.masks)
+            for name, m in module.named_modules():
+                if isinstance(m, module._conv):
+                    name_cur = name + "_" + str(index)
+                    index += 1
+                    self.names.append(name_cur)
+                    self.params[name_cur] = m.weight  # [p, q, r, c, k1, k2]
+                    shape = list(m.weight.shape)
+                    row_shape = copy.deepcopy(shape)
+                    col_shape = copy.deepcopy(shape)
+                    row_shape[-3] = 1
+                    row_shape[-1] = 1
+                    col_shape[-4] = 1
+                    col_shape[-2] = 1
+                    self.masks[name_cur] = MultiMask(
+                        mask_cfg={"row_mask": row_shape, "col_mask": col_shape},
+                        device=self.device,
+                    )
+                    m.prune_mask = self.masks[
+                        name_cur
+                    ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
+            logger.info(f"created pruning mask.")
+            self.structure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
         else:
             raise ValueError("unrecognize pruning type")
@@ -263,12 +364,12 @@ class DSTScheduler(object):
     ):
         self.sparsity = density
         if mode == "uniform":
-            for name in self.masks:
-                self.masks[name] = torch.rand_like(self.params[name].data) < density
+            for mask in self.masks.values():
+                mask["elem_mask"].bernoulli_(p=density)
         elif mode == "custom":
             custom_mask = torch.load(mask_file, map_location=self.device)
-            for name in self.masks:
-                self.masks[name] = custom_mask[name.removeprefix("module.") + "_mask"]
+            for name, mask in self.masks.items():
+                mask["elem_mask"] = custom_mask[name.removeprefix("module.") + "_mask"]
         elif mode == "fixed_ERK":
             total_params = sum([m.numel() for m in self.masks.values()])
             is_epsilon_valid = False
@@ -349,7 +450,7 @@ class DSTScheduler(object):
                 logger.info(
                     f"layer: {name}, shape: {mask.shape}, density: {density_dict[name]}"
                 )
-                self.masks[name] = torch.rand_like(mask) < density_dict[name]
+                mask["elem_mask"].bernoulli_(p=density_dict[name])
 
                 total_nonzero += density_dict[name] * n_param
             logger.info(f"Overall Density {total_nonzero / total_params}")
@@ -365,12 +466,14 @@ class DSTScheduler(object):
             for name, mask in self.masks.items():
                 growth = epsilon * sum(mask.shape)
                 prob = growth / mask.numel()
-                self.masks[name] = torch.rand_like(mask) < prob
+                mask["elem_mask"].bernoulli_(p=prob)
         else:
             raise ValueError("Unrecognized Init Mode !")
 
         self.apply_mask()
-        self.fired_masks = copy.deepcopy(self.masks)  # used for over-paremeters
+        self.fired_masks = {
+            name: m.data.clone() for name, m in self.masks.items()
+        }  # used for over-paremeters
         self.init_death_rate(self.death_rate)
 
         total_size = sum([m.numel() for m in self.masks.values()])
@@ -398,16 +501,19 @@ class DSTScheduler(object):
         logger.info(f"Nonzero counts:\n\t{self.name2nonzeros}")
         logger.info(f"Param counts:\n\t{params}")
 
+    def structure_init(self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0):
+        raise NotImplementedError
+
     # multiple mask for paramenters and momentum in optimizers
     def apply_mask(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:
             for name in self.masks:
                 mask = self.masks[name]
                 weight = self.params[name]
-                weight.data.mul_(mask)
+                weight.data *= mask
                 state = self.optimizer.state[weight]
                 if "momentum_buffer" in state:
-                    state["momentum_buffer"].mul_(mask)
+                    state["momentum_buffer"] *= mask
         else:
             raise ValueError("Unrecognized Pruning Type !")
 
@@ -586,47 +692,32 @@ class DSTScheduler(object):
     """
 
     def random_growth(self, name, new_mask, total_regrowth, weight):
-        n = (new_mask == 0).sum().item()
+        n = new_mask.numel() - new_mask.sum().item()
         if n == 0:
             return new_mask
-        expeced_growth_probability = total_regrowth / n
-        new_weights = torch.rand(new_mask.shape).cuda() < expeced_growth_probability
-        # for pytorch1.5.1, use return new_mask.bool() | new_weights
-        return new_mask.byte() | new_weights
+        expected_growth_probability = total_regrowth / n
+        if self.pruning_type == "unstructure":
+            new_weights = new_mask.new_zeros().bernoulli_(p=expected_growth_probability)
+        elif self.pruning_type == "structure":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unrecognized Pruning Type !")
 
-    def momentum_growth(self, name, new_mask, total_regrowth, weight):
-        grad = self.get_momentum_for_weight(weight)
-        grad = grad * (new_mask == 0).float()
-        y, idx = torch.sort(torch.abs(grad).flatten(), descending=True)
-        new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
-
-        return new_mask
+        return new_mask | new_weights
 
     def gradient_growth(self, name, new_mask, total_regrowth, weight):
         if total_regrowth == 0:
             return new_mask
         grad = self.get_gradient_for_weights(weight)
-        grad[new_mask] = 0
-        y, idx = torch.sort(grad.abs().flatten(), descending=True)
-        new_mask.data.view(-1)[idx[:total_regrowth]] = 1
-
+        grad = grad * (~new_mask)
+        if self.pruning_type == "unstructure":
+            y, idx = torch.sort(grad.abs().flatten(), descending=True)
+            new_mask.data.view(-1)[idx[:total_regrowth]] = 1
+        elif self.pruning_type == "structure":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unrecognized Pruning Type !")
         return new_mask
-
-    def mix_growth(self, name, new_mask, total_regrowth, weight):
-        gradient_grow = int(total_regrowth * self.args.mix)
-        random_grow = total_regrowth - gradient_grow
-        grad = self.get_gradient_for_weights(weight)
-        grad = grad * (new_mask == 0).float()
-
-        y, idx = torch.sort(torch.abs(grad).flatten(), descending=True)
-        new_mask.data.view(-1)[idx[:gradient_grow]] = 1.0
-
-        n = (new_mask == 0).sum().item()
-        expeced_growth_probability = random_grow / n
-        new_weights = torch.rand(new_mask.shape).cuda() < expeced_growth_probability
-        new_mask = new_mask.byte() | new_weights
-
-        return new_mask, grad
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)

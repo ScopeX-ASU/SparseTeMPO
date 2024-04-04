@@ -562,7 +562,7 @@ class CrosstalkScheduler(object):
         distance_upper = (
             X.unsqueeze(1)
             .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .sub(interv_s * mask)  # [p, q, k1*k2,k1*k2]
+            .sub(interv_s * mask)  # [..., k1*k2,k1*k2]
             .square_()
             .mul_(interv_h**2)
             .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
@@ -571,7 +571,7 @@ class CrosstalkScheduler(object):
         distance_lower = (
             X.unsqueeze(1)
             .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .add(interv_s * (~mask))  # [p, q, k1*k2,k1*k2]
+            .add(interv_s * (~mask))  # [..., k1*k2,k1*k2]
             .square_()
             .mul_(interv_h**2)
             .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
@@ -591,6 +591,8 @@ class CrosstalkScheduler(object):
         If phase < 0, heat up lower arm.
         No matter phases are postive or negative, it is heated up with higher temperature. So its contribution is related to |phases|.
         e.g., if a phase is -pi/2, it contributes 1% delta_phi increase to another MZI. the delta_phi of victim MZI will increase by 1%*|-pi/2|=pi/200.
+        The current function can handle pruned phases. Once pruned, delta_phi=0, the pruned phase has zero impact to other MZIs, but itself will still be
+        impacted by other MZIs.
         Args:
             phase (Tensor): [..., k1, k2] blocked phases
             crosstalk_matrix (Tensor): [..., k1*k2, k1*k2] crosstalk matrix Gamma
@@ -616,7 +618,7 @@ class CrosstalkScheduler(object):
             torch.arange(flat_phase_abs.shape[-1]),
         ] = flat_phase
         ## then we need batched vector inner product
-        return torch.einsum("pqij,pqji->pqi", crosstalk_matrix, flat_phase_abs).view(
+        return torch.einsum("...ij,...ji->...i", crosstalk_matrix, flat_phase_abs).view(
             phase_shape
         )
 
@@ -640,33 +642,35 @@ class DeterministicCtx:
         torch.random.set_rng_state(self.torch_random_state)
         torch.cuda.set_rng_state(self.torch_cuda_random_state)
 
+
 class SparsityEnergyScheduler(object):
     def __init__(
-            self,
-            core_size: _size = [8, 8], #This one should be the architecture core size
-            threshold: float = 0.2,
-            pi_shift_power: float = 30.0,
-            device="cuda:0"
-            ) -> None:
+        self,
+        core_size: _size = [8, 8],  # This one should be the architecture core size
+        threshold: float = 0.2,
+        pi_shift_power: float = 30.0,
+        device="cuda:0",
+    ) -> None:
         super().__init__()
         self.height = core_size[0]
-        self.width= core_size[1]
+        self.width = core_size[1]
         self.node_number = core_size[0] * core_size[1]
         self.pi_shift_power = pi_shift_power
         self.threshold = threshold
         self.device = device
 
-    def cal_sw_power(
-            self,
-            total_ports:int=3, 
-            upper_ports:int=1
-            ):
+    def cal_sw_power(self, total_ports: int = 3, upper_ports: int = 1):
         if total_ports == 0:
             return 0
-        return torch.arccos((upper_ports / total_ports)**0.5) * 2 / torch.pi * self.pi_shift_power
-    
+        return (
+            torch.arccos((upper_ports / total_ports) ** 0.5)
+            * 2
+            / torch.pi
+            * self.pi_shift_power
+        )
+
     def calculate_total_and_upper_ports(self, ports_array):
-    
+
         # Base case: If the array is empty or has one element, no power is needed.
         if ports_array.shape[0] <= 1:
             return 0
@@ -674,20 +678,20 @@ class SparsityEnergyScheduler(object):
         # Calculate the number of opening ports in the upper half.
         mid_index = ports_array.shape[0] // 2
         upper_open_ports = torch.sum(ports_array[:mid_index])
-        
+
         # Calculate the total number of opening ports.
         total_open_ports = torch.sum(ports_array)
-        
+
         # Calculate the power needed for this level's switch.
         power_for_this_switch = self.cal_sw_power(total_open_ports, upper_open_ports)
-        
+
         # Recursively calculate the power for the left and right halves.
         left_power = self.calculate_total_and_upper_ports(ports_array[:mid_index])
         right_power = self.calculate_total_and_upper_ports(ports_array[mid_index:])
-        
+
         # Sum the powers: current level's switch, left half, and right half.
         total_power = power_for_this_switch + left_power + right_power
-    
+
         return total_power
 
     def calculate_average_power(self, phase):
@@ -695,16 +699,24 @@ class SparsityEnergyScheduler(object):
         total_elements = phase.numel()
 
         # Calculate required padding for uneven division
-        padding_needed = (self.node_number) - (total_elements % (self.node_number))\
-              if total_elements % (self.node_number) != 0 else 0
+        padding_needed = (
+            (self.node_number) - (total_elements % (self.node_number))
+            if total_elements % (self.node_number) != 0
+            else 0
+        )
         padded_total_elements = total_elements + padding_needed
         number_of_slices = padded_total_elements // (self.node_number)
 
         phase_reshape = phase.flatten()
         if padding_needed > 0:
-            phase_reshape = torch.cat([phase_reshape, torch.zeros(padding_needed, dtype=phase.dtype, device=self.device)])
+            phase_reshape = torch.cat(
+                [
+                    phase_reshape,
+                    torch.zeros(padding_needed, dtype=phase.dtype, device=self.device),
+                ]
+            )
 
-        phase_reshape = phase_reshape.reshape(number_of_slices, self.height , self.width)
+        phase_reshape = phase_reshape.reshape(number_of_slices, self.height, self.width)
 
         average_power = 0
         for i in range(phase_reshape.shape[0]):
@@ -713,7 +725,6 @@ class SparsityEnergyScheduler(object):
             average_power += self.calculate_total_and_upper_ports(binary_mask)
 
         return average_power / phase_reshape.shape[0]
-
 
 
 def calculate_grad_hessian(

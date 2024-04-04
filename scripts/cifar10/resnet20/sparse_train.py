@@ -1,7 +1,7 @@
 '''
 Date: 2024-03-27 22:40:49
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-03-28 00:02:17
+LastEditTime: 2024-04-04 13:17:18
 FilePath: /SparseTeMPO/scripts/cifar10/resnet20/sparse_train.py
 '''
 """
@@ -24,7 +24,7 @@ model = "resnet20"
 experiment = "sparse_train"
 root = f"log/{dataset}/{model}/{experiment}"
 script = "sparse_train.py"
-config_file = f"configs/{dataset}/{model}/train/train.yml"
+config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
 
 
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
     tasks = [
         # (1, 8, 8, 1),
-        (1, 8, 8, 2),
+        (1, 8, 8, 3),
     ]
     with Pool(1) as p:
         p.map(task_launcher, tasks)
