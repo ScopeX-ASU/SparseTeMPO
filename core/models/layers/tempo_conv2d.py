@@ -156,6 +156,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.set_noise_flag(True)
         self.set_enable_remap(False)
         self.set_light_redist(False)
+        self.set_power_gating(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
         self.switch_power_scheduler = switch_power_scheduler

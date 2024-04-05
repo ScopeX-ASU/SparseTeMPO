@@ -288,6 +288,10 @@ class ONNBaseLayer(nn.Module):
         ## enable or disable light redistribution if prune_mask is available
         self._enable_light_redist = flag
 
+    def set_power_gating(self, flag: bool = False) -> None:
+        ## enable or disable power gating for light shutdown and TIA/ADC shutdown if prune_mask is available
+        self._enable_power_gating = flag
+
     def _add_output_noise(self, x) -> None:
         if self.output_noise_std > 1e-6:
             if self._enable_light_redist and self.prune_mask is not None:
@@ -440,6 +444,8 @@ class ONNBaseLayer(nn.Module):
 
                 ## reconstruct noisy weight
                 weight_noisy = mzi_phase_to_out_diff(phase).mul(S_scale[..., None])
+                if self._enable_power_gating and self.prune_mask is not None:
+                    weight_noisy = weight_noisy * self.prune_mask.data ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
                 if enable_ste:
                     weight = STE.apply(
                         weight, weight_noisy

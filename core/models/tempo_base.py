@@ -197,11 +197,26 @@ class TeMPO_Base(nn.Module):
             if isinstance(layer, self._conv_linear) and hasattr(layer, "set_phase_variation"):
                 layer.set_phase_variation(flag)
 
+    def set_output_noise(self, noise_std: float = 0.0):
+        for layer in self.modules():
+            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_output_noise"):
+                layer.set_output_noise(noise_std)
+
     def set_global_temp_drift(self, flag: bool = True):
         for layer in self.modules():
             if isinstance(layer, self._conv_linear) and hasattr(layer, "set_global_temp_drift"):
                 layer.set_global_temp_drift(flag)
 
+    def set_light_redist(self, flag: bool = True):
+        for layer in self.modules():
+            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_light_redist"):
+                layer.set_light_redist(flag)
+    
+    def set_power_gating(self, flag: bool = True):
+        for layer in self.modules():
+            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_power_gating"):
+                layer.set_power_gating(flag)
+                
     def set_gamma_noise(
         self, noise_std: float = 0.0, random_state: Optional[int] = None
     ) -> None:
