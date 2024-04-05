@@ -140,6 +140,9 @@ class ONNBaseLayer(nn.Module):
     def set_weight_noise(self, noise_std: float = 0.0) -> None:
         self.weight_noise_std = noise_std
 
+    def set_output_noise(self, noise_std: float = 0.0) -> None:
+        self.output_noise_std = noise_std
+
     # tenperature drift changes, new added
     def set_global_temp_drift(self, flag: bool = False) -> None:
         self._enable_global_temp_drift = flag
@@ -279,6 +282,46 @@ class ONNBaseLayer(nn.Module):
         else:
             raise NotImplementedError
 
+        return x
+
+    def set_light_redist(self, flag: bool = False) -> None:
+        ## enable or disable light redistribution if prune_mask is available
+        self._enable_light_redist = flag
+
+    def _add_output_noise(self, x) -> None:
+        if self.output_noise_std > 1e-6:
+            if self._enable_light_redist and self.prune_mask is not None:
+                r, k1, k2 = self.miniblock[0], self.miniblock[-2], self.miniblock[-1]
+                q, c = self.weight.shape[1], self.weight.shape[3]  # q*c
+                col_mask = self.prune_mask["col_mask"]  # [p,q,1,c,1,k2]
+                col_nonzeros = col_mask.sum(-1).squeeze(-1)  # [p,q,1,c]
+                factor = (
+                    col_nonzeros.pow(1.5)
+                    .div(k2 / self.output_noise_std)
+                    .expand(-1, -1, r * k1, -1)
+                )  # [p,q,1,c] -> [p,q,r*k1,c]
+                factor = factor.permute(0, 2, 1, 3).flatten(0, 1)[
+                    : x.shape[1]
+                ]  # [p*r*k1, q, c] -> [out_c, q, c]
+                noise = torch.randn(
+                    size=list(x.shape) + [q, c], device=x.device
+                )  # [bs, out_c, h, w, q, c] or [bs, out_c, q, c]
+                if noise.dim() == 6:
+                    noise = torch.einsum(
+                        "bohwqc,oqc -> bohw", noise, factor
+                    )  # [bs, out_c, h, w]
+                elif noise.dim() == 4:
+                    noise = torch.einsum("boqc,oqc -> bo", noise, factor)  # [bs, out_c]
+                else:
+                    raise NotImplementedError
+                x = x + noise
+            else:
+                vector_len = np.prod(self.weight.shape[1::2])  # q*c*k2
+                x = add_gaussian_noise(
+                    x,
+                    noise_mean=0,
+                    noise_std=np.sqrt(vector_len) * self.output_noise_std,
+                )
         return x
 
     def cal_switch_power(self, weight, src: str = "weight") -> None:
