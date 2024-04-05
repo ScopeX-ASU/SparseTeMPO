@@ -1,7 +1,7 @@
 '''
 Date: 2024-03-23 14:04:00
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-04-04 14:24:22
+LastEditTime: 2024-04-04 18:49:20
 FilePath: /SparseTeMPO/unitest/test_non_ideality.py
 '''
 """
@@ -16,6 +16,7 @@ import torch
 from core.models.layers.tempo_linear import TeMPOBlockLinear
 from core.models.layers.tempo_conv2d import TeMPOBlockConv2d
 from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
+from core.models.dst import MultiMask
 
 
 def test_mode_switch():
@@ -47,6 +48,23 @@ def test_crosstalk():
     nmae = torch.norm(weight_noisy - weight, p=1) / torch.norm(weight, p=1)
     print(f"crosstalk coefficient k: {k}, N-MAE: {nmae}")
 
+def test_output_noise():
+    device = "cuda:0"
+    layer = TeMPOBlockLinear(32, 32, miniblock=[4, 4, 4, 4], device=device)
+    x = torch.randn(1, 32, device=device)
+    y = layer(x)
+    layer.set_output_noise(0.001)
+    layer.set_noise_flag(True)
+    y2 = layer(x)
+    nmae = torch.norm(y2 - y, p=1) / torch.norm(y, p=1)
+    print(f"N-MAE: {nmae}")
+
+    mask = MultiMask({"row_mask": [2,2,4,1,4,1], "col_mask": [2,2,1,4,1,4]}, device=device)
+    layer.prune_mask = mask
+    layer.set_light_redist(True)
+    y3 = layer(x)
+    nmae = torch.norm(y3 - y, p=1) / torch.norm(y, p=1)
+    print(f"N-MAE: {nmae}")
 
 def test_layer_power_calculator():
     device = "cuda:0"
@@ -65,5 +83,6 @@ def test_layer_power_calculator():
     # print(power)
 
 # test_mode_switch()
-test_crosstalk()
+test_output_noise()
+# test_crosstalk()
 # test_layer_power_calculator()

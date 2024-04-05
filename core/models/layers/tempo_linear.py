@@ -20,7 +20,13 @@ from torch.nn import Parameter
 from torch.types import Device
 
 from .base_layer import ONNBaseLayer
-from .utils import CrosstalkScheduler, PhaseVariationScheduler, SparsityEnergyScheduler, WeightQuantizer_LSQ, merge_chunks
+from .utils import (
+    CrosstalkScheduler,
+    PhaseVariationScheduler,
+    SparsityEnergyScheduler,
+    WeightQuantizer_LSQ,
+    merge_chunks,
+)
 
 __all__ = [
     "TeMPOBlockLinear",
@@ -38,7 +44,7 @@ class TeMPOBlockLinear(ONNBaseLayer):
     __constants__ = ["in_features", "out_features"]
     in_features: int
     out_features: int
-    miniblock: Tuple[int,int,int,int]
+    miniblock: Tuple[int, int, int, int]
     weight: Tensor
     mode: str
     __annotations__ = {"bias": Optional[Tensor]}
@@ -48,7 +54,7 @@ class TeMPOBlockLinear(ONNBaseLayer):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        miniblock: Tuple[int, int,int,int] = [4, 4,4,4],  # [r, c, dim_y, dim_x]
+        miniblock: Tuple[int, int, int, int] = [4, 4, 4, 4],  # [r, c, dim_y, dim_x]
         mode: str = "weight",
         w_bit: int = 32,
         in_bit: int = 32,
@@ -109,9 +115,11 @@ class TeMPOBlockLinear(ONNBaseLayer):
         self.set_phase_variation(False)
         self.set_crosstalk_noise(False)
         self.set_weight_noise(0)
+        self.set_output_noise(0)
         self.set_enable_ste(True)
         self.set_noise_flag(True)
         self.set_enable_remap(False)
+        self.set_light_redist(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
         self.switch_power_scheduler = switch_power_scheduler
@@ -121,6 +129,7 @@ class TeMPOBlockLinear(ONNBaseLayer):
         else:
             self.register_parameter("bias", None)
 
+        self.prune_mask = None
         self.reset_parameters()
 
     @classmethod
@@ -198,6 +207,9 @@ class TeMPOBlockLinear(ONNBaseLayer):
             weight,
             bias=self.bias,
         )
+
+        if self._noise_flag:
+            x = self._add_output_noise(x)
 
         return x
 

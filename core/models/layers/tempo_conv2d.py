@@ -20,7 +20,13 @@ from torch.nn.modules.utils import _pair
 from torch.types import Device, _size
 
 from .base_layer import ONNBaseLayer
-from .utils import CrosstalkScheduler, PhaseVariationScheduler, SparsityEnergyScheduler, WeightQuantizer_LSQ, merge_chunks
+from .utils import (
+    CrosstalkScheduler,
+    PhaseVariationScheduler,
+    SparsityEnergyScheduler,
+    WeightQuantizer_LSQ,
+    merge_chunks,
+)
 
 __all__ = [
     "TeMPOBlockConv2d",
@@ -102,7 +108,9 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.in_channels_flat = (
             self.in_channels * self.kernel_size[0] * self.kernel_size[1]
         )
-        self.grid_dim_x = int(np.ceil(self.in_channels_flat / miniblock[1] / miniblock[3]))
+        self.grid_dim_x = int(
+            np.ceil(self.in_channels_flat / miniblock[1] / miniblock[3])
+        )
         self.grid_dim_y = int(np.ceil(self.out_channels / miniblock[0] / miniblock[2]))
         self.in_channels_pad = self.grid_dim_x * miniblock[1] * miniblock[3]
         self.out_channels_pad = self.grid_dim_y * miniblock[0] * miniblock[2]
@@ -143,9 +151,11 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.set_global_temp_drift(False)
         self.set_crosstalk_noise(False)
         self.set_weight_noise(0)
+        self.set_output_noise(0)
         self.set_enable_ste(True)
         self.set_noise_flag(True)
         self.set_enable_remap(False)
+        self.set_light_redist(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
         self.switch_power_scheduler = switch_power_scheduler
@@ -154,7 +164,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             self.bias = Parameter(torch.Tensor(out_channels).to(self.device))
         else:
             self.register_parameter("bias", None)
-
+        self.prune_mask = None
         self.reset_parameters()
 
     @classmethod
@@ -279,21 +289,25 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             dilation=self.dilation,
             groups=self.groups,
         )
+        if self._noise_flag:
+            x = self._add_output_noise(x)
         return x
 
     def extra_repr(self):
-        s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
-             ', stride={stride}')
+        s = (
+            "{in_channels}, {out_channels}, kernel_size={kernel_size}"
+            ", stride={stride}"
+        )
         if self.padding != (0,) * len(self.padding):
-            s += ', padding={padding}'
+            s += ", padding={padding}"
         if self.dilation != (1,) * len(self.dilation):
-            s += ', dilation={dilation}'
+            s += ", dilation={dilation}"
         if self.groups != 1:
-            s += ', groups={groups}'
+            s += ", groups={groups}"
         if self.bias is None:
-            s += ', bias=False'
+            s += ", bias=False"
         if self.miniblock is not None:
-            s += ', miniblock={miniblock}'
+            s += ", miniblock={miniblock}"
         if self.mode is not None:
-            s += ', mode={mode}'
+            s += ", mode={mode}"
         return s.format(**self.__dict__)
