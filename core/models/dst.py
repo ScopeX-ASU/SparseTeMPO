@@ -9,6 +9,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import math
+from itertools import combinations
+from collections import defaultdict
 from pyutils.general import logger
 
 __all__ = ["DSTScheduler", "CosineDecay", "LinearDecay"]
@@ -157,6 +160,8 @@ class DSTScheduler(object):
         spe_initial=None,
         train_loader=None,
         pruning_type="structure",
+        pi_shift_power=30,
+        power_choice_margin=2,
         update_frequency: int = 100,
         T_max: int = 10000,
         device="cuda:0",
@@ -197,6 +202,13 @@ class DSTScheduler(object):
         self.death_rate = death_rate
         self.death_rate_decay = death_rate_decay
         self.name2death_rate = {}
+
+        # Power exploration.
+        # Default, no exploration on power
+        self.set_death_power_exploration(False)
+        self.set_grow_power_exploration(False)
+        self.pi_shift_power = pi_shift_power
+        self.power_choice_margin = power_choice_margin
 
         # stats
         self.name2zeros = {}
@@ -347,6 +359,107 @@ class DSTScheduler(object):
     """
     Basic Utility
     """
+    def set_death_power_exploration(self, flag: bool = False) -> None:
+        self.death_power_flag = flag
+
+    def set_grow_power_exploration(self, flag: bool = False) -> None:
+        self.grow_power_flag = flag
+
+    def _cal_sw_power(
+        self,
+        total_ports:int=3, 
+        upper_ports:int=1
+        ):
+
+        if total_ports == 0:
+            return 0
+        return torch.arccos((upper_ports / total_ports)**0.5) * 2 / torch.pi * self.pi_shift_power
+
+    def _calculate_total_and_upper_ports(self, ports_array):
+        # Base case: If the array is empty or has one element, no power is needed.
+        if ports_array.shape[0] <= 1:
+            return 0
+        # Calculate the number of opening ports in the upper half.
+        mid_index = ports_array.shape[0] // 2
+        upper_open_ports = torch.sum(ports_array[:mid_index])
+        
+        # Calculate the total number of opening ports.
+        total_open_ports = torch.sum(ports_array)
+
+        # Calculate the power needed for this level's switch.
+        power_for_this_switch = self._cal_sw_power(total_open_ports, upper_open_ports)
+
+        # Recursively calculate the power for the left and right halves.
+        left_power = self._calculate_total_and_upper_ports(ports_array[:mid_index])
+        right_power = self._calculate_total_and_upper_ports(ports_array[mid_index:])
+
+        # Sum the powers: current level's switch, left half, and right half.
+        total_power = power_for_this_switch + left_power + right_power
+
+        return total_power
+
+    def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
+        # Ensure that the number of zeros does not exceed the array length
+
+        if num_zeros > array_length:
+            return "The number of zeros cannot exceed the total array length."
+
+        # Generate all possible positions for zeros in the array
+        indices = range(array_length)
+        zero_positions = list(combinations(indices, num_zeros))
+        power_dict = defaultdict(list)
+
+        for positions in zero_positions:
+            # Initialize the array with all ones
+
+            array = [1] * array_length
+            # Place zeros in the specified positions
+
+            for pos in positions:
+                array[pos] = 0
+
+            # Calculate the power for this array configuration
+            power = self._calculate_total_and_upper_ports(array)
+
+            # Add the power and array pair to the dictionary
+            power_dict[power].append(array)
+
+        return {key: value for key, value in sorted(power_dict.items())}
+
+    def find_least_crosstalk_pattern(self, masks):
+        if len(masks) == 1:
+            return masks[0]
+        best_score = -float('inf')
+        best_mask = None
+        for mask in masks:
+            score = self.calculate_least_crosstalk_pattern(mask)
+            if score > best_score:
+                best_score = score
+                best_mask = mask
+        return best_mask
+    
+    def calculate_least_crosstalk_pattern(self, mask):
+        active_indices = [i for i, val in enumerate(mask) if val == 1]
+        num_active = len(active_indices)
+        
+        if num_active < 2:
+            # Not enough active elements to calculate separation or density.
+            return float('inf')
+        
+        # calculate distances between consecutive active elements
+        closest_distances = []
+        for i in active_indices:
+            distances = [abs(i - j) for j in active_indices if i != j]
+            closest_distances.append(min(distances))
+        average_separation = sum(closest_distances) / len(closest_distances)
+        
+        # Density Metric: Standard deviation of the distances
+        # Higher standard deviation (more spread out) is better
+        density_score = torch.std(distances)
+        
+        composite_score = average_separation + density_score
+        
+        return composite_score
 
     def init_death_rate(self, death_rate, pruning_type="unstructure"):
         if pruning_type == "unstructure":
@@ -506,7 +619,24 @@ class DSTScheduler(object):
         logger.info(f"Param counts:\n\t{params}")
 
     def structure_init(self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0):
-        raise NotImplementedError
+        if mode == "fixed_ERK":
+            raise NotImplementedError
+        elif mode == "row_power_efficient":
+            col_num = self.masks["col_mask"].shape[-4] * self.masks["col_mask"].shape[-2]
+            slides_of_weight_elements_num = self.masks["col_mask"].shape[-4]\
+                                            * self.masks["row_mask"].shape[-3]\
+                                            * self.masks["col_mask"].shape[-2]\
+                                            * self.masks["row_mask"].shape[-1]
+            empty_col_num =  torch.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
+                                        (self.masks["row_mask"].shape[-3] * self.masks["row_mask"].shape[-1]))
+            _, possible_patterns = next(iter(self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num).items()))
+
+
+            best_pattern = self.find_least_crosstalk_pattern(possible_patterns)
+
+            best_pattern_r_k1 = best_pattern.view(self.masks["col_mask"].shape[-4], self.masks["col_mask"].shape[-2])
+
+            self.masks["col_mask"][:, :, :, 0, :, 0] = best_pattern_r_k1 
 
     # multiple mask for paramenters and momentum in optimizers
     def apply_mask(self, pruning_type="unstructure"):
