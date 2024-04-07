@@ -41,21 +41,8 @@ checkpoint:
   restore_checkpoint : ""
 
 model:
-  name: "TeMPO_CNN"
+  name: "MetaConvCombined"
 
 debug:
   verboise: 1
 
-dst_scheduler:
-  death_rate: 0.5
-  growth_death_ratio: 1.0
-  death_rate_decay: cosine
-  death_mode: magnitude
-  growth_mode: gradient
-  redistribution_mode: null
-  spe_initial: null
-  pruning_type: structure
-  update_frequency: 1400
-  T_max: 0.8
-  density: 0.8
-  init_mode: row_power_efficient

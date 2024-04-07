@@ -473,7 +473,8 @@ class DSTScheduler(object):
             distances = [abs(i - j) for j in active_indices if i != j]
             closest_distances.append(min(distances))
         average_separation = sum(closest_distances) / len(closest_distances)
-        
+        #[1, 0, 0, 1, 0, 0, 1, 0]
+        #[3,1,1]
         # Density Metric: Standard deviation of the distances
         # Higher standard deviation (more spread out) is better
         density_score = torch.std(distances)
@@ -644,14 +645,20 @@ class DSTScheduler(object):
             raise NotImplementedError
         elif mode == "row_power_efficient":
             for name, mask in self.masks.items():
-                col_num = mask["col_mask"].shape[-4] * mask["col_mask"].shape[-2]
-                slides_of_weight_elements_num = mask["col_mask"].shape[-4]\
-                                                * mask["row_mask"].shape[-3]\
-                                                * mask["col_mask"].shape[-2]\
-                                                * mask["row_mask"].shape[-1]
+                col_num = self.params[name].shape[-4] * self.params[name].shape[-2]
+                slides_of_weight_elements_num = self.params[name].numel()
+
+                # print(type(slides_of_weight_elements_num))
+
                 empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (mask["row_mask"].shape[-3] * mask["row_mask"].shape[-1])).astype(int)
-                
+                                            (self.params[name].shape[-6]\
+                                                * self.params[name].shape[-5]\
+                                                * self.params[name].shape[-3]\
+                                                * self.params[name].shape[-1])).astype(int)
+                # print(self.params[name].shape[2] == mask["col_mask"].shape[-5])
+                # print(empty_col_num, col_num)
+                # dict = self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num)
+                # print(dict)
                 _, possible_patterns = next(iter(self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num).items()))
 
 
@@ -664,12 +671,12 @@ class DSTScheduler(object):
         elif mode == "col_power_efficient":
             for name, mask in self.masks.items():
                 row_num = mask["row_mask"].shape[-3] * mask["row_mask"].shape[-1]
-                slides_of_weight_elements_num = mask["col_mask"].shape[-4]\
-                                                * mask["row_mask"].shape[-3]\
-                                                * mask["col_mask"].shape[-2]\
-                                                * mask["row_mask"].shape[-1]
+                slides_of_weight_elements_num = self.params[name].numel()
                 empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (mask["col_mask"].shape[-4] * mask["col_mask"].shape[-2])).astype(int)
+                                            (mask["col_mask"].shape[-6]\
+                                                * mask["col_mask"].shape[-5]\
+                                                * mask["col_mask"].shape[-4]\
+                                                * mask["col_mask"].shape[-2])).astype(int)
                 
                 possible_patterns = self._possible_patterns(empty_row_num, row_num)
 
@@ -866,7 +873,15 @@ class DSTScheduler(object):
 
         num_zeros = self.name2zeros[name]
 
-        pass
+        # weight here is [p, q, r, c, k1, k2]
+        p, q, r, c, k1, k2 = weight.shape
+        # [p, q, rk1, ck2]
+        reshaped_weights = weight.view(p, q, r*k1, c*k2)
+        
+        column_magnitudes = torch.norm(torch.abs(reshaped_weights), dim=2, p=2)
+
+
+
 
 
     def magnitude_death(self, mask, weight, name):

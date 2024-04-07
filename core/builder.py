@@ -231,7 +231,15 @@ def make_model(
             act_cfg=model_cfg.act_cfg,
             device=device,
         ).to(device)
-
+    elif "metaconvcombined" in name.lower():
+        model = eval(name)(
+            in_channel=model_cfg.conv_cfg.in_channel,
+            out_channel=model_cfg.conv_cfg.out_channel,
+            kernel_size=model_cfg.conv_cfg.kernel_size,
+            path_multiplier=model_cfg.conv_cfg.path_multiplier,
+            path_depth=model_cfg.conv_cfg.path_depth,
+            device=device,
+        ).to(device)
     else:
         model = None
         raise NotImplementedError(f"Not supported model name: {model_cfg.name}")
