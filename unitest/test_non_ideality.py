@@ -17,7 +17,9 @@ from core.models.layers.tempo_linear import TeMPOBlockLinear
 from core.models.layers.tempo_conv2d import TeMPOBlockConv2d
 from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
 from core.models.dst import MultiMask
-
+from core import builder
+from pyutils.config import configs
+from core.utils import get_parameter_group, register_hidden_hooks
 
 def test_mode_switch():
     device = "cuda:0"
@@ -82,7 +84,27 @@ def test_layer_power_calculator():
     # power = layer.cal_switch_power(weight=None, src="phase")
     # print(power)
 
+def test_DST_scheduler():
+    device = "cuda:0"
+    configs.load("./configs/dst_test_config/train/sparse_train.yml", recursive=True)
+    model = builder.make_model(
+        device,
+        model_cfg=configs.model,
+        random_state=(
+            int(configs.run.random_state) if int(configs.run.deterministic) else None
+        ),
+    )
+    optimizer = builder.make_optimizer(get_parameter_group(model, weight_decay=float(configs.optimizer.weight_decay)),
+        name=configs.optimizer.name,
+        configs=configs.optimizer,)
+    train_loader, validation_loader, test_loader = builder.make_dataloader(
+        splits=["train", "valid", "test"]
+    )
+    dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
+
+
 # test_mode_switch()
-test_output_noise()
+# test_output_noise()
 # test_crosstalk()
 # test_layer_power_calculator()
+test_DST_scheduler()

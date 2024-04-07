@@ -373,18 +373,18 @@ class DSTScheduler(object):
 
         if total_ports == 0:
             return 0
-        return torch.arccos((upper_ports / total_ports)**0.5) * 2 / torch.pi * self.pi_shift_power
+        return np.arccos((upper_ports / total_ports)**0.5) * 2 / np.pi * self.pi_shift_power
 
     def _calculate_total_and_upper_ports(self, ports_array):
         # Base case: If the array is empty or has one element, no power is needed.
-        if ports_array.shape[0] <= 1:
+        if len(ports_array) <= 1:
             return 0
         # Calculate the number of opening ports in the upper half.
-        mid_index = ports_array.shape[0] // 2
-        upper_open_ports = torch.sum(ports_array[:mid_index])
+        mid_index = len(ports_array) // 2
+        upper_open_ports = sum(ports_array[:mid_index])
         
         # Calculate the total number of opening ports.
-        total_open_ports = torch.sum(ports_array)
+        total_open_ports = sum(ports_array)
 
         # Calculate the power needed for this level's switch.
         power_for_this_switch = self._cal_sw_power(total_open_ports, upper_open_ports)
@@ -397,6 +397,27 @@ class DSTScheduler(object):
         total_power = power_for_this_switch + left_power + right_power
 
         return total_power
+
+    def _possible_patterns(self, num_zeros, array_length):
+        if num_zeros > array_length:
+            return "The number of zeros cannot exceed the total array length."
+
+        # Generate all possible positions for zeros in the array
+        indices = range(array_length)
+        zero_positions = list(combinations(indices, num_zeros))
+        patterns = []
+        for positions in zero_positions:
+            # Initialize the array with all ones
+
+            array = [1] * array_length
+            # Place zeros in the specified positions
+
+            for pos in positions:
+                array[pos] = 0
+
+            patterns.append(array)
+
+        return patterns
 
     def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
         # Ensure that the number of zeros does not exceed the array length
@@ -618,25 +639,82 @@ class DSTScheduler(object):
         logger.info(f"Nonzero counts:\n\t{self.name2nonzeros}")
         logger.info(f"Param counts:\n\t{params}")
 
-    def structure_init(self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0):
+    def structure_init(self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0, mask_file=None):
         if mode == "fixed_ERK":
             raise NotImplementedError
         elif mode == "row_power_efficient":
-            col_num = self.masks["col_mask"].shape[-4] * self.masks["col_mask"].shape[-2]
-            slides_of_weight_elements_num = self.masks["col_mask"].shape[-4]\
-                                            * self.masks["row_mask"].shape[-3]\
-                                            * self.masks["col_mask"].shape[-2]\
-                                            * self.masks["row_mask"].shape[-1]
-            empty_col_num =  torch.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                        (self.masks["row_mask"].shape[-3] * self.masks["row_mask"].shape[-1]))
-            _, possible_patterns = next(iter(self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num).items()))
+            for name, mask in self.masks.items():
+                col_num = mask["col_mask"].shape[-4] * mask["col_mask"].shape[-2]
+                slides_of_weight_elements_num = mask["col_mask"].shape[-4]\
+                                                * mask["row_mask"].shape[-3]\
+                                                * mask["col_mask"].shape[-2]\
+                                                * mask["row_mask"].shape[-1]
+                empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
+                                            (mask["row_mask"].shape[-3] * mask["row_mask"].shape[-1])).astype(int)
+                
+                _, possible_patterns = next(iter(self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num).items()))
 
 
-            best_pattern = self.find_least_crosstalk_pattern(possible_patterns)
+                best_pattern = torch.tensor(self.find_least_crosstalk_pattern(possible_patterns), device=self.device)
 
-            best_pattern_r_k1 = best_pattern.view(self.masks["col_mask"].shape[-4], self.masks["col_mask"].shape[-2])
+                best_pattern_r_k1 = best_pattern.view(mask["col_mask"].shape[-4], mask["col_mask"].shape[-2])
 
-            self.masks["col_mask"][:, :, :, 0, :, 0] = best_pattern_r_k1 
+                self.masks[name]["col_mask"][:, :, :, 0, :, 0] = best_pattern_r_k1
+
+        elif mode == "col_power_efficient":
+            for name, mask in self.masks.items():
+                row_num = mask["row_mask"].shape[-3] * mask["row_mask"].shape[-1]
+                slides_of_weight_elements_num = mask["col_mask"].shape[-4]\
+                                                * mask["row_mask"].shape[-3]\
+                                                * mask["col_mask"].shape[-2]\
+                                                * mask["row_mask"].shape[-1]
+                empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
+                                            (mask["col_mask"].shape[-4] * mask["col_mask"].shape[-2])).astype(int)
+                
+                possible_patterns = self._possible_patterns(empty_row_num, row_num)
+
+                print(possible_patterns)
+
+                best_pattern = torch.tensor(self.find_least_crosstalk_pattern(possible_patterns), device=self.device)
+
+                best_pattern_c_k2 = best_pattern.view(mask["row_mask"].shape[-3], mask["row_mask"].shape[-1])
+
+                self.masks[name]["row_mask"][:, :, 0, :, 0, :] = best_pattern_c_k2
+
+        elif mode == "row_col_power_efficient":
+            # TODO: Figure out a strategy
+            raise NotImplementedError
+
+        self.apply_mask()
+        self.fired_masks = {
+            name: m.data.clone() for name, m in self.masks.items()
+        }  # used for over-paremeters
+        self.init_death_rate(self.death_rate)
+
+        total_size = sum([m.numel() for m in self.masks.values()])
+        logger.info(f"Total Model parameters: {total_size}")
+
+        total_nonzeros = sum([m.sum().item() for m in self.masks.values()])
+
+        logger.info(
+            "Total parameters under density level of {0}: {1}".format(
+                density, total_nonzeros / total_size
+            )
+        )
+
+        self.gather_statistics()
+        logger.info(
+            "Scale up initialized weights by (weight_count/nonzeros) to maintain the same variance"
+        )
+        for name in self.masks:
+            self.params[name].data.mul_(
+                self.params[name].numel() / self.name2nonzeros[name]
+            )
+
+        params = {name: m.numel() for name, m in self.masks.items()}
+        logger.info(f"Zero counts:\n\t{self.name2zeros}")
+        logger.info(f"Nonzero counts:\n\t{self.name2nonzeros}")
+        logger.info(f"Param counts:\n\t{params}")
 
     # multiple mask for paramenters and momentum in optimizers
     def apply_mask(self, pruning_type="unstructure"):
@@ -770,6 +848,26 @@ class DSTScheduler(object):
 
     def threshold_death(self, mask, weight, name):
         return torch.abs(weight.data) > self.threshold
+
+    def col_magnitude_death(self, mask, weight, name):
+
+        # mask here is col mask [p, q, r, 1, k1, 1]
+        if mask.sum().item() == mask.numel():
+            return mask
+        
+        death_rate = self.name2death_rate[name]
+
+        num_remove = math.ceil(
+            death_rate * self.name2nonzeros[name]
+        )
+
+        if num_remove == 0.0:
+            return mask
+
+        num_zeros = self.name2zeros[name]
+
+        pass
+
 
     def magnitude_death(self, mask, weight, name):
 
