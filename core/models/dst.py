@@ -162,6 +162,9 @@ class DSTScheduler(object):
         pruning_type="structure",
         pi_shift_power=30,
         power_choice_margin=2,
+        ADC_power = 3,
+        TIA_power = 3,
+        HDAC_power = 6, 
         update_frequency: int = 100,
         T_max: int = 10000,
         device="cuda:0",
@@ -209,6 +212,9 @@ class DSTScheduler(object):
         self.set_grow_power_exploration(False)
         self.pi_shift_power = pi_shift_power
         self.power_choice_margin = power_choice_margin
+        self.ADC_power = ADC_power
+        self.TIA_power = TIA_power
+        self.HDAC_power = HDAC_power
 
         # stats
         self.name2zeros = {}
@@ -365,87 +371,124 @@ class DSTScheduler(object):
     def set_grow_power_exploration(self, flag: bool = False) -> None:
         self.grow_power_flag = flag
 
-    def _cal_sw_power(
-        self,
-        total_ports:int=3, 
-        upper_ports:int=1
-        ):
+    def cal_ports_power(self, ports_array):
+        n = 0
+        ports_cal = np.zeros((ports_array.shape[1] - 1, 2, ports_array.shape[0]))
+        self._calculate_total_and_upper_ports(ports_array, ports_cal, n)
+        tp = np.transpose(ports_cal, (2,1,0))
+        fractions = np.divide(tp[:, 0, :], tp[:, 1, :], out=np.ones_like(tp[:, 0, :]), where=tp[:, 1, :]!=0)
+        each_power = np.arccos(fractions**0.5) * 2 / np.pi * self.pi_shift_power 
+        return each_power.sum(axis=1)
 
-        if total_ports == 0:
-            return 0
-        return np.arccos((upper_ports / total_ports)**0.5) * 2 / np.pi * self.pi_shift_power
-
-    def _calculate_total_and_upper_ports(self, ports_array):
+    def _calculate_total_and_upper_ports(self, ports_array, ports_cal, n):
+        
         # Base case: If the array is empty or has one element, no power is needed.
-        if len(ports_array) <= 1:
-            return 0
+        if ports_array.shape[1] <= 1:
+            return ports_cal
+
         # Calculate the number of opening ports in the upper half.
-        mid_index = len(ports_array) // 2
-        upper_open_ports = sum(ports_array[:mid_index])
+        mid_index = ports_array.shape[1] // 2
+        
+        upper_open_ports = np.sum(ports_array[:, :mid_index], axis=1)
+    #     print(upper_open_ports)
         
         # Calculate the total number of opening ports.
-        total_open_ports = sum(ports_array)
-
-        # Calculate the power needed for this level's switch.
-        power_for_this_switch = self._cal_sw_power(total_open_ports, upper_open_ports)
-
+        total_open_ports = np.sum(ports_array[:, :], axis=1)
+    #     print(upper_open_ports)
+        
+        ports_cal[n, 0, :] = upper_open_ports
+    #     print(ports_cal[:, 0, :])
+        ports_cal[n, 1, :] = total_open_ports
+    #     print(n, ports_cal[:, 0, :])
+        
+        n *= 2
+    #     print(ports_cal[:, 0, :])
         # Recursively calculate the power for the left and right halves.
-        left_power = self._calculate_total_and_upper_ports(ports_array[:mid_index])
-        right_power = self._calculate_total_and_upper_ports(ports_array[mid_index:])
+        self._calculate_total_and_upper_ports(ports_array[:, :mid_index], ports_cal, n + 1)
+    #     print(ports_cal[:, 0, :])
+        self._calculate_total_and_upper_ports(ports_array[:, mid_index:], ports_cal, n + 2)
+    #     print(ports_cal[:, 0, :])
+        
+        return ports_cal
 
-        # Sum the powers: current level's switch, left half, and right half.
-        total_power = power_for_this_switch + left_power + right_power
-
-        return total_power
-
-    def _possible_patterns(self, num_zeros, array_length):
+    def initial_sparsity_patterns(self, array_length, num_zeros):
+        assert math.log2(array_length).is_integer(), "Provided length is not a power of 2." 
+        # Ensure that the number of zeros does not exceed the array length
         if num_zeros > array_length:
-            return "The number of zeros cannot exceed the total array length."
+            raise ValueError("The number of zeros cannot exceed the total array length.")
 
         # Generate all possible positions for zeros in the array
-        indices = range(array_length)
-        zero_positions = list(combinations(indices, num_zeros))
+        zero_positions = list(combinations(range(array_length), num_zeros))
+
         patterns = []
+
         for positions in zero_positions:
             # Initialize the array with all ones
-
             array = [1] * array_length
             # Place zeros in the specified positions
-
             for pos in positions:
                 array[pos] = 0
-
             patterns.append(array)
-
+        patterns = np.array(patterns)
+        
         return patterns
 
-    def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
-        # Ensure that the number of zeros does not exceed the array length
+    def find_minimal_power_pattern(self, patterns, pattern_powers):
+        sorted_indices = np.argsort(pattern_powers)
+        sorted_mask_array = patterns[sorted_indices]
+        lowest_power = pattern_powers[sorted_indices][0]
+        lowest_power_masks = sorted_mask_array[pattern_powers[sorted_indices] == lowest_power]
+        # print(lowest_power_masks)
+        return lowest_power_masks, lowest_power
 
-        if num_zeros > array_length:
-            return "The number of zeros cannot exceed the total array length."
+    # def _possible_patterns(self, num_zeros, array_length):
+    #     if num_zeros > array_length:
+    #         return "The number of zeros cannot exceed the total array length."
 
-        # Generate all possible positions for zeros in the array
-        indices = range(array_length)
-        zero_positions = list(combinations(indices, num_zeros))
-        power_dict = defaultdict(list)
+    #     # Generate all possible positions for zeros in the array
+    #     indices = range(array_length)
+    #     zero_positions = list(combinations(indices, num_zeros))
+    #     patterns = []
+    #     for positions in zero_positions:
+    #         # Initialize the array with all ones
 
-        for positions in zero_positions:
-            # Initialize the array with all ones
+    #         array = [1] * array_length
+    #         # Place zeros in the specified positions
 
-            array = [1] * array_length
-            # Place zeros in the specified positions
+    #         for pos in positions:
+    #             array[pos] = 0
 
-            for pos in positions:
-                array[pos] = 0
+    #         patterns.append(array)
 
-            # Calculate the power for this array configuration
-            power = self._calculate_total_and_upper_ports(array)
+    #     return patterns
 
-            # Add the power and array pair to the dictionary
-            power_dict[power].append(array)
+    # def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
+    #     # Ensure that the number of zeros does not exceed the array length
 
-        return {key: value for key, value in sorted(power_dict.items())}
+    #     if num_zeros > array_length:
+    #         return "The number of zeros cannot exceed the total array length."
+
+    #     # Generate all possible positions for zeros in the array
+    #     indices = range(array_length)
+    #     zero_positions = list(combinations(indices, num_zeros))
+    #     power_dict = defaultdict(list)
+
+    #     for positions in zero_positions:
+    #         # Initialize the array with all ones
+
+    #         array = [1] * array_length
+    #         # Place zeros in the specified positions
+
+    #         for pos in positions:
+    #             array[pos] = 0
+
+    #         # Calculate the power for this array configuration
+    #         power = self._calculate_total_and_upper_ports(array)
+
+    #         # Add the power and array pair to the dictionary
+    #         power_dict[power].append(array)
+
+    #     return {key: value for key, value in sorted(power_dict.items())}
 
     def find_least_crosstalk_pattern(self, masks):
         if len(masks) == 1:
@@ -470,18 +513,35 @@ class DSTScheduler(object):
         # calculate distances between consecutive active elements
         closest_distances = []
         for i in active_indices:
-            distances = [abs(i - j) for j in active_indices if i != j]
-            closest_distances.append(min(distances))
-        average_separation = sum(closest_distances) / len(closest_distances)
+            distances = [np.abs(i - j) for j in active_indices if i != j]
+            closest_distances.append(np.min(distances))
+        average_separation = np.sum(closest_distances) / len(closest_distances)
         #[1, 0, 0, 1, 0, 0, 1, 0]
         #[3,1,1]
         # Density Metric: Standard deviation of the distances
         # Higher standard deviation (more spread out) is better
-        density_score = torch.std(distances)
+        density_score = np.std(distances)
         
         composite_score = average_separation + density_score
         
         return composite_score
+
+    def calculate_TIA_ADC_power(self, mask_length, empty_rows, TIA_power, ADC_power):
+        return (mask_length - empty_rows) * (TIA_power + ADC_power)
+
+    def calculate_HDAC_power(self, mask_length, empty_cols, HDAC_power):
+        return (mask_length - empty_cols) * (HDAC_power)
+
+    # def find_max_min_power_from_mask(self, mode="structure" TIA_power, ADC_power):
+    #     if mode != "structure":
+    #         raise ValueError("Not structure pruning, can't calculate power from here")
+        
+
+
+    #     for name, mask in self.masks.items():
+
+
+
 
     def init_death_rate(self, death_rate, pruning_type="unstructure"):
         if pruning_type == "unstructure":
@@ -645,7 +705,7 @@ class DSTScheduler(object):
             raise NotImplementedError
         elif mode == "row_power_efficient":
             for name, mask in self.masks.items():
-                col_num = self.params[name].shape[-4] * self.params[name].shape[-2]
+                col_num = self.params[name].shape[-1]
                 slides_of_weight_elements_num = self.params[name].numel()
 
                 # print(type(slides_of_weight_elements_num))
@@ -653,44 +713,107 @@ class DSTScheduler(object):
                 empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
                                             (self.params[name].shape[-6]\
                                                 * self.params[name].shape[-5]\
+                                                * self.params[name].shape[-4]\
                                                 * self.params[name].shape[-3]\
-                                                * self.params[name].shape[-1])).astype(int)
+                                                * self.params[name].shape[-2])).astype(int)
                 # print(self.params[name].shape[2] == mask["col_mask"].shape[-5])
                 # print(empty_col_num, col_num)
                 # dict = self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num)
                 # print(dict)
-                _, possible_patterns = next(iter(self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num).items()))
-
+                patterns = self.initial_sparsity_patterns(col_num, empty_col_num)
+                powers = self.cal_ports_power(patterns)
+                possible_patterns, _ = self.find_minimal_power_pattern(patterns, powers)
 
                 best_pattern = torch.tensor(self.find_least_crosstalk_pattern(possible_patterns), device=self.device)
 
-                best_pattern_r_k1 = best_pattern.view(mask["col_mask"].shape[-4], mask["col_mask"].shape[-2])
-
-                self.masks[name]["col_mask"][:, :, :, 0, :, 0] = best_pattern_r_k1
+                self.masks[name]["col_mask"][..., :] = best_pattern
 
         elif mode == "col_power_efficient":
             for name, mask in self.masks.items():
-                row_num = mask["row_mask"].shape[-3] * mask["row_mask"].shape[-1]
+                row_num = self.params[name].shape[-2]
                 slides_of_weight_elements_num = self.params[name].numel()
+
                 empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (mask["col_mask"].shape[-6]\
-                                                * mask["col_mask"].shape[-5]\
-                                                * mask["col_mask"].shape[-4]\
-                                                * mask["col_mask"].shape[-2])).astype(int)
+                                            (self.params[name].shape[-6]\
+                                                * self.params[name].shape[-5]\
+                                                * self.params[name].shape[-4]\
+                                                * self.params[name].shape[-3]\
+                                                * self.params[name].shape[-1])).astype(int)
                 
-                possible_patterns = self._possible_patterns(empty_row_num, row_num)
+                patterns = self.initial_sparsity_patterns(row_num, empty_row_num)
 
-                print(possible_patterns)
+                best_pattern = torch.tensor(self.find_least_crosstalk_pattern(patterns), device=self.device)
 
-                best_pattern = torch.tensor(self.find_least_crosstalk_pattern(possible_patterns), device=self.device)
-
-                best_pattern_c_k2 = best_pattern.view(mask["row_mask"].shape[-3], mask["row_mask"].shape[-1])
-
-                self.masks[name]["row_mask"][:, :, 0, :, 0, :] = best_pattern_c_k2
+                self.masks[name]["row_mask"][..., :, 0] = best_pattern
 
         elif mode == "row_col_power_efficient":
-            # TODO: Figure out a strategy
-            raise NotImplementedError
+            for name, mask in self.masks.items():
+                row_num = self.params[name].shape[-2]                
+                col_num = self.params[name].shape[-1]
+                slides_of_weight_elements_num = self.params[name].numel()
+
+                empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
+                                            (self.params[name].shape[-6]\
+                                                * self.params[name].shape[-5]\
+                                                * self.params[name].shape[-4]\
+                                                * self.params[name].shape[-3]\
+                                                * self.params[name].shape[-2])).astype(int)
+
+                empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
+                                            (self.params[name].shape[-6]\
+                                                * self.params[name].shape[-5]\
+                                                * self.params[name].shape[-4]\
+                                                * self.params[name].shape[-3]\
+                                                * self.params[name].shape[-1])).astype(int)
+                best_power_1 = float('inf')
+                best_power_2 = float('inf')
+                for i in range(empty_col_num + 1):
+                    col_pattern = self.initial_sparsity_patterns(col_num, i)
+                    col_powers = self.cal_ports_power(col_pattern)
+                    col_possible_patterns, lowest_switch_power = self.find_minimal_power_pattern(col_pattern, col_powers)
+
+                    num_of_rest_empty_rows = np.ceil((empty_row_num * self.params[name].shape[-2] - i * self.params[name].shape[-1]) / self.params[name].shape[-1]).astype(int)
+
+                    TIA_ADC_power = self.calculate_TIA_ADC_power(row_num, num_of_rest_empty_rows, self.TIA_power, self.ADC_power)
+                    HDAC_power = self.calculate_HDAC_power(col_num, i, self.HDAC_power)
+
+                    col_power = HDAC_power + lowest_switch_power
+                    row_power = TIA_ADC_power
+                    total_power = col_power + row_power
+
+                    if total_power < best_power_1:
+                        best_power_1 == total_power
+                        best_col_pattern_iter1 = self.find_least_crosstalk_pattern(col_possible_patterns)
+                        row_patterns = self.initial_sparsity_patterns(row_num, num_of_rest_empty_rows)
+                        best_row_pattern_iter1 = self.find_least_crosstalk_pattern(row_patterns)
+
+                for i in range(empty_row_num + 1):
+                    num_of_rest_empty_cols = np.ceil((empty_col_num * self.params[name].shape[-1] - i * self.params[name].shape[-2]) / self.params[name].shape[-2]).astype(int)
+
+                    TIA_ADC_power = self.calculate_TIA_ADC_power(row_num, i, self.TIA_power, self.ADC_power)
+                    HDAC_power = self.calculate_HDAC_power(col_num, num_of_rest_empty_cols, self.HDAC_power)
+
+                    col_pattern = self.initial_sparsity_patterns(col_num, num_of_rest_empty_cols)
+                    col_powers = self.cal_ports_power(col_pattern)
+                    col_possible_patterns, lowest_switch_power = self.find_minimal_power_pattern(col_pattern, col_powers)
+
+                    col_power = HDAC_power + lowest_switch_power
+                    row_power = TIA_ADC_power
+
+                    total_power = col_power + row_power
+
+                    if total_power < best_power_2:
+                        best_power_2 == total_power
+                        best_col_pattern_iter2 = self.find_least_crosstalk_pattern(col_possible_patterns)
+                        best_row_pattern_iter2 = self.find_least_crosstalk_pattern(self.initial_sparsity_patterns(row_num, num_of_rest_empty_rows))
+
+                if best_power_1 <= best_power_2:
+                    self.masks[name]['col_mask'][..., :] = torch.tensor(best_col_pattern_iter1, device=self.device)
+                    self.masks[name]['row_mask'][..., :, 0] = torch.tensor(best_row_pattern_iter1, device=self.device)
+
+                else:
+                    self.masks[name]['col_mask'][..., :] = torch.tensor(best_col_pattern_iter2, device=self.device)
+                    self.masks[name]['row_mask'][..., :, 0] = torch.tensor(best_row_pattern_iter2, device=self.device)
 
         self.apply_mask()
         self.fired_masks = {
