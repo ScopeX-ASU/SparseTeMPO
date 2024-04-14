@@ -171,7 +171,7 @@ class DSTScheduler(object):
     ):
         ## Dynamic Sparse Training Scheduler
 
-        growth_modes = ["random", "momentum", "momentum_neuron", "gradient"]
+        growth_modes = ["random", "momentum", "momentum_neuron", "gradient", "row_only_gradient", "col_only_gradient"]
         if growth_mode not in growth_modes:
             raise ValueError(
                 f"Growth mode expects {growth_modes}, but got {growth_mode}."
@@ -371,7 +371,14 @@ class DSTScheduler(object):
     def set_grow_power_exploration(self, flag: bool = False) -> None:
         self.grow_power_flag = flag
 
+    def set_magnitude_based_flag(self, flag: bool = False) -> None:
+        self.magnitude_based_flag = flag
+
+    def set_gradient_based_flag(self, flag: bool = False) -> None:
+        self.gradient_based_flag = flag
+
     def cal_ports_power(self, ports_array):
+        assert math.log2(ports_array.shape[1]).is_integer(), "Cannot calculate ports' power if the number of ports is not the power of 2."
         n = 0
         ports_cal = np.zeros((ports_array.shape[1] - 1, 2, ports_array.shape[0]))
         self._calculate_total_and_upper_ports(ports_array, ports_cal, n)
@@ -411,7 +418,7 @@ class DSTScheduler(object):
         
         return ports_cal
 
-    def initial_sparsity_patterns(self, array_length, num_zeros):
+    def col_sparsity_patterns(self, array_length, num_zeros):
         assert math.log2(array_length).is_integer(), "Provided length is not a power of 2." 
         # Ensure that the number of zeros does not exceed the array length
         if num_zeros > array_length:
@@ -432,6 +439,58 @@ class DSTScheduler(object):
         patterns = np.array(patterns)
         
         return patterns
+    
+    def row_sparsity_patterns(self, array_length, num_zeros):
+        # Ensure that the number of zeros does not exceed the array length
+        if num_zeros > array_length:
+            raise ValueError("The number of zeros cannot exceed the total array length.")
+
+        # Generate all possible positions for zeros in the array
+        zero_positions = list(combinations(range(array_length), num_zeros))
+
+        patterns = []
+
+        for positions in zero_positions:
+            # Initialize the array with all ones
+            array = [1] * array_length
+            # Place zeros in the specified positions
+            for pos in positions:
+                array[pos] = 0
+            patterns.append(array)
+        patterns = np.array(patterns)
+        
+        return patterns
+
+    def magnitude_based_col_sparsity_patterns(self, remain_length, num_of_zeros, fixed_index):
+        fixed_index = np.array(fixed_index).reshape(-1)
+        indices = np.arange(fixed_index.size)
+        fixed_index = fixed_index - indices
+        possible_patterns = self.col_sparsity_patterns(remain_length, num_of_zeros)
+        if fixed_index.size != 0:
+            possible_patterns = np.insert(possible_patterns, fixed_index, 1, axis=1)
+        powers = self.cal_ports_power(possible_patterns)
+        possible_patterns, _ = self.find_minimal_power_pattern(possible_patterns, powers)
+        return self.find_least_crosstalk_pattern(possible_patterns)
+    
+    def gradient_based_col_sparsity_patterns(self, remain_length, num_of_zeros, fixed_index):
+        fixed_index = np.array(fixed_index).reshape(-1)
+        indices = np.arange(fixed_index.size)
+        fixed_index = fixed_index - indices
+        possible_patterns = self.row_sparsity_patterns(remain_length, num_of_zeros)
+        if fixed_index.size != 0:
+            possible_patterns = np.insert(possible_patterns, fixed_index, 1, axis=1)
+        powers = self.cal_ports_power(possible_patterns)
+        possible_patterns, _ = self.find_minimal_power_pattern(possible_patterns, powers)
+        return self.find_least_crosstalk_pattern(possible_patterns)
+
+    def magnitude_based_row_sparsity_patterns(self, remain_length, num_of_zeros, fixed_index):
+        fixed_index = np.array(fixed_index).reshape(-1)
+        indices = np.arange(fixed_index.size)
+        fixed_index = fixed_index - indices
+        possible_patterns = self.row_sparsity_patterns(remain_length, num_of_zeros)
+        if fixed_index.size != 0:
+            possible_patterns = np.insert(possible_patterns, fixed_index, 1, axis=1)
+        return self.find_least_crosstalk_pattern(possible_patterns)
 
     def find_minimal_power_pattern(self, patterns, pattern_powers):
         sorted_indices = np.argsort(pattern_powers)
@@ -703,24 +762,21 @@ class DSTScheduler(object):
     def structure_init(self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0, mask_file=None):
         if mode == "fixed_ERK":
             raise NotImplementedError
-        elif mode == "row_power_efficient":
+        elif mode == "col_power_efficient":
             for name, mask in self.masks.items():
-                col_num = self.params[name].shape[-1]
+                p, q, r, c, k1, k2 = self.params[name].shape
+                col_num = k2
                 slides_of_weight_elements_num = self.params[name].numel()
 
                 # print(type(slides_of_weight_elements_num))
 
                 empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (self.params[name].shape[-6]\
-                                                * self.params[name].shape[-5]\
-                                                * self.params[name].shape[-4]\
-                                                * self.params[name].shape[-3]\
-                                                * self.params[name].shape[-2])).astype(int)
+                                            (p * q * r * c * k1)).astype(int)
                 # print(self.params[name].shape[2] == mask["col_mask"].shape[-5])
                 # print(empty_col_num, col_num)
                 # dict = self._sparsity_pattern_power_dictionary(num_zeros=empty_col_num, array_length=col_num)
                 # print(dict)
-                patterns = self.initial_sparsity_patterns(col_num, empty_col_num)
+                patterns = self.col_sparsity_patterns(col_num, empty_col_num)
                 powers = self.cal_ports_power(patterns)
                 possible_patterns, _ = self.find_minimal_power_pattern(patterns, powers)
 
@@ -728,19 +784,16 @@ class DSTScheduler(object):
 
                 self.masks[name]["col_mask"][..., :] = best_pattern
 
-        elif mode == "col_power_efficient":
+        elif mode == "row_power_efficient":
             for name, mask in self.masks.items():
-                row_num = self.params[name].shape[-2]
+                p, q, r, c, k1, k2 = self.params[name].shape
+                row_num = k1
                 slides_of_weight_elements_num = self.params[name].numel()
 
                 empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (self.params[name].shape[-6]\
-                                                * self.params[name].shape[-5]\
-                                                * self.params[name].shape[-4]\
-                                                * self.params[name].shape[-3]\
-                                                * self.params[name].shape[-1])).astype(int)
+                                            (p * q * r * c * k2)).astype(int)
                 
-                patterns = self.initial_sparsity_patterns(row_num, empty_row_num)
+                patterns = self.row_sparsity_patterns(row_num, empty_row_num)
 
                 best_pattern = torch.tensor(self.find_least_crosstalk_pattern(patterns), device=self.device)
 
@@ -748,31 +801,24 @@ class DSTScheduler(object):
 
         elif mode == "row_col_power_efficient":
             for name, mask in self.masks.items():
-                row_num = self.params[name].shape[-2]                
-                col_num = self.params[name].shape[-1]
+                p, q, r, c, k1, k2 = self.params[name].shape
+                row_num = k1               
+                col_num = k2
                 slides_of_weight_elements_num = self.params[name].numel()
 
                 empty_col_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (self.params[name].shape[-6]\
-                                                * self.params[name].shape[-5]\
-                                                * self.params[name].shape[-4]\
-                                                * self.params[name].shape[-3]\
-                                                * self.params[name].shape[-2])).astype(int)
+                                            (p * q * r * c * k1)).astype(int)
 
                 empty_row_num =  np.ceil((slides_of_weight_elements_num - density * slides_of_weight_elements_num) / \
-                                            (self.params[name].shape[-6]\
-                                                * self.params[name].shape[-5]\
-                                                * self.params[name].shape[-4]\
-                                                * self.params[name].shape[-3]\
-                                                * self.params[name].shape[-1])).astype(int)
+                                            (p * q * r * c * k2)).astype(int)
                 best_power_1 = float('inf')
                 best_power_2 = float('inf')
                 for i in range(empty_col_num + 1):
-                    col_pattern = self.initial_sparsity_patterns(col_num, i)
+                    col_pattern = self.col_sparsity_patterns(col_num, i)
                     col_powers = self.cal_ports_power(col_pattern)
                     col_possible_patterns, lowest_switch_power = self.find_minimal_power_pattern(col_pattern, col_powers)
 
-                    num_of_rest_empty_rows = np.ceil((empty_row_num * self.params[name].shape[-2] - i * self.params[name].shape[-1]) / self.params[name].shape[-1]).astype(int)
+                    num_of_rest_empty_rows = np.ceil((k1 * k2 - i * k2) / k2).astype(int)
 
                     TIA_ADC_power = self.calculate_TIA_ADC_power(row_num, num_of_rest_empty_rows, self.TIA_power, self.ADC_power)
                     HDAC_power = self.calculate_HDAC_power(col_num, i, self.HDAC_power)
@@ -784,16 +830,16 @@ class DSTScheduler(object):
                     if total_power < best_power_1:
                         best_power_1 == total_power
                         best_col_pattern_iter1 = self.find_least_crosstalk_pattern(col_possible_patterns)
-                        row_patterns = self.initial_sparsity_patterns(row_num, num_of_rest_empty_rows)
+                        row_patterns = self.row_sparsity_patterns(row_num, num_of_rest_empty_rows)
                         best_row_pattern_iter1 = self.find_least_crosstalk_pattern(row_patterns)
 
                 for i in range(empty_row_num + 1):
-                    num_of_rest_empty_cols = np.ceil((empty_col_num * self.params[name].shape[-1] - i * self.params[name].shape[-2]) / self.params[name].shape[-2]).astype(int)
+                    num_of_rest_empty_cols = np.ceil((k1 * k2 - i * k1) / k1).astype(int)
 
                     TIA_ADC_power = self.calculate_TIA_ADC_power(row_num, i, self.TIA_power, self.ADC_power)
                     HDAC_power = self.calculate_HDAC_power(col_num, num_of_rest_empty_cols, self.HDAC_power)
 
-                    col_pattern = self.initial_sparsity_patterns(col_num, num_of_rest_empty_cols)
+                    col_pattern = self.col_sparsity_patterns(col_num, num_of_rest_empty_cols)
                     col_powers = self.cal_ports_power(col_pattern)
                     col_possible_patterns, lowest_switch_power = self.find_minimal_power_pattern(col_pattern, col_powers)
 
@@ -805,7 +851,8 @@ class DSTScheduler(object):
                     if total_power < best_power_2:
                         best_power_2 == total_power
                         best_col_pattern_iter2 = self.find_least_crosstalk_pattern(col_possible_patterns)
-                        best_row_pattern_iter2 = self.find_least_crosstalk_pattern(self.initial_sparsity_patterns(row_num, num_of_rest_empty_rows))
+                        row_patterns = self.row_sparsity_patterns(row_num, num_of_rest_empty_rows)
+                        best_row_pattern_iter2 = self.find_least_crosstalk_pattern(row_patterns)
 
                 if best_power_1 <= best_power_2:
                     self.masks[name]['col_mask'][..., :] = torch.tensor(best_col_pattern_iter1, device=self.device)
@@ -884,6 +931,12 @@ class DSTScheduler(object):
                     new_mask = self.magnitude_and_negativity_death(mask, weight, name)
                 elif self.death_mode == "threshold":
                     new_mask = self.threshold_death(mask, weight, name)
+                elif self.death_mode == "row_only_magnitude":
+                    new_mask = self.row_only_magnitude_death(mask, weight, name)
+                elif self.death_mode == "col_only_magnitude":
+                    new_mask = self.col_only_magnitude_death(mask, weight, name)
+                elif self.death_mode == "row_col_magnitude":
+                    new_mask = self.row_col_magnitude_death(mask, weight, name)
                 self.pruned_number[name] = int(
                     self.name2nonzeros[name] - new_mask.sum().item()
                 )
@@ -902,6 +955,18 @@ class DSTScheduler(object):
                     )
                 elif self.growth_mode == "gradient":
                     new_mask = self.gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.growth_mode == "row_only_gradient":
+                    new_mask = self.row_only_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.growth_mode == "col_only_gradient":
+                    new_mask = self.col_only_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.growth_mode == "row_col_gradient":
+                    new_mask = self.row_col_gradient_growth(
                         name, mask, self.pruned_number[name], weight
                     )
                 self.masks[name] = new_mask
@@ -979,10 +1044,10 @@ class DSTScheduler(object):
     def threshold_death(self, mask, weight, name):
         return torch.abs(weight.data) > self.threshold
 
-    def col_magnitude_death(self, mask, weight, name):
+    def col_only_magnitude_death(self, mask, weight, name):
 
-        # mask here is col mask [p, q, r, 1, k1, 1]
-        if mask.sum().item() == mask.numel():
+        # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        if mask.num_nonzeros() == mask.numel():
             return mask
         
         death_rate = self.name2death_rate[name]
@@ -993,19 +1058,121 @@ class DSTScheduler(object):
 
         if num_remove == 0.0:
             return mask
-
-        num_zeros = self.name2zeros[name]
+        
+        # num_zeros = self.name2zeros[name]
 
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
-        # [p, q, rk1, ck2]
-        reshaped_weights = weight.view(p, q, r*k1, c*k2)
+        num_col_remove = num_remove / (r * k1) # num of col p*q*c*k2
+        num_col_empty = mask["col_mask"].sum().item() - mask["col_mask"].numel() #get col num from mask
+        # [p, q, c, k2]
+        col_magnitude = np.linalg.norm(weight.cpu().data, ord=2, axis=(2,4))
+        col_magnitude = col_magnitude.reshape(-1)
         
-        column_magnitudes = torch.norm(torch.abs(reshaped_weights), dim=2, p=2)
+        # sort the col magnitude
+        x = np.sort(col_magnitude)
+        sorted_indices = np.argsort(col_magnitude)
+        # print(sorted_indices)
+        k = math.ceil(num_col_remove + num_col_empty)
+        
+        threshold = x[k - 1].item()
 
+        threshold_mag_power = x[k + self.power_choice_margin - 1].item()
+        
+        new_col_mask = (col_magnitude > threshold)
 
+        col_magnitude = col_magnitude.reshape(p*q*c, k2)
+        new_col_mask = new_col_mask.reshape(p*q*c, k2)
 
+        for i in range(col_magnitude.shape[0]):
+            if self.magnitude_based_flag:
+                current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
+                num_of_less_threshold = np.sum((current_k2_with_mask <= threshold_mag_power) & (current_k2_with_mask > threshold))
+                if num_of_less_threshold != 0:
+                    fixed_indices = np.sort(np.where(col_magnitude[i] > threshold_mag_power))
+                    num_of_zeros = np.sum(new_col_mask[i] == False)
+                    new_col_mask[i] = self.magnitude_based_col_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+            else:
+                num_of_ones = np.sum(new_col_mask[i] == True)
+                num_of_zeros = np.sum(new_col_mask[i] == False)
+                if num_of_ones <= self.power_choice_margin:
+                    possible_patterns = self.col_sparsity_patterns(k2, num_of_zeros)
+                    powers = self.cal_ports_power(possible_patterns)
+                    possible_patterns, _ = self.find_minimal_power_pattern(possible_patterns, powers)
+                    new_col_mask[i] = self.find_least_crosstalk_pattern(possible_patterns)
+                else:
+                    current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
+                    sorted_indices_loop = np.argsort(current_k2_with_mask)
+                    fixed_indices = np.sort(sorted_indices_loop[num_of_zeros + self.power_choice_margin:])
+                    new_col_mask[i] = self.magnitude_based_col_sparsity_patterns(k2 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
+        mask["col_mask"][...] = torch.tensor(new_col_mask.reshape(p, q, 1, c, 1, k2), device=self.device)
+        return mask
 
+    def row_only_magnitude_death(self, mask, weight, name):
+
+        # mask here is row mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        if mask.num_nonzeros() == mask.numel():
+            return mask
+        
+        death_rate = self.name2death_rate[name]
+
+        num_remove = math.ceil(
+            death_rate * self.name2nonzeros[name]
+        )
+
+        if num_remove == 0.0:
+            return mask
+        
+        # num_zeros = self.name2zeros[name]
+
+        # weight here is [p, q, r, c, k1, k2]
+        p, q, r, c, k1, k2 = weight.shape
+        num_row_remove = num_remove / (c * k2) # num of row p*q*r*k1
+        num_row_empty = mask["row_mask"].sum().item() - mask["row_mask"].numel() #get row num from mask
+        # [p, q, c, k2]
+        row_magnitude = np.linalg.norm(weight.cpu().data, ord=2, axis=(3,5))
+        row_magnitude = row_magnitude.reshape(-1)
+        # print(row_magnitude)
+        # sort the row magnitude
+        x = np.sort(row_magnitude)
+        # print(x)
+        sorted_indices = np.argsort(row_magnitude)
+        # print(sorted_indices)
+        k = math.ceil(num_row_remove + num_row_empty)
+        # print(k)
+        threshold = x[k - 1].item()
+        # print(x)
+        threshold_mag_power = x[k + self.power_choice_margin - 1].item()
+        # print(threshold_mag_power)
+        new_row_mask = (row_magnitude > threshold)
+        # print(new_row_mask)
+
+        row_magnitude = row_magnitude.reshape(p*q*r, k1)
+        new_row_mask = new_row_mask.reshape(p*q*r, k1)
+
+        for i in range(row_magnitude.shape[0]):
+            if self.magnitude_based_flag:
+                current_k1_with_mask = row_magnitude[i] * new_row_mask[i]
+                num_of_less_threshold = np.sum((current_k1_with_mask <= threshold_mag_power) & (current_k1_with_mask > threshold))
+                if num_of_less_threshold != 0:
+                    print(type(row_magnitude[i]), type(threshold_mag_power))
+                    fixed_indices = np.sort(np.where(row_magnitude[i] > threshold_mag_power))
+                    print(fixed_indices[0])
+                    num_of_zeros = np.sum(new_row_mask[i] == False)
+                    new_row_mask[i] = self.magnitude_based_row_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+            else:
+                num_of_ones = np.sum(new_row_mask[i] == True)
+                num_of_zeros = np.sum(new_row_mask[i] == False)
+                if num_of_ones <= self.power_choice_margin:
+                    possible_patterns = self.row_sparsity_patterns(k1, num_of_zeros)
+                    new_row_mask[i] = self.find_least_crosstalk_pattern(possible_patterns)
+                else:
+                    current_k1_with_mask = row_magnitude[i] * new_row_mask[i]
+                    sorted_indices_loop = np.argsort(current_k1_with_mask)
+                    fixed_indices = np.sort(sorted_indices_loop[num_of_zeros + self.power_choice_margin:])
+                    new_row_mask[i] = self.magnitude_based_row_sparsity_patterns(k1 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
+        mask["row_mask"][...] = torch.tensor(new_row_mask.reshape(p, q, r, 1, k1, 1), device=self.device)
+        return mask
 
     def magnitude_death(self, mask, weight, name):
 
@@ -1084,6 +1251,121 @@ class DSTScheduler(object):
             y, idx = torch.sort(grad.abs().flatten(), descending=True)
             new_mask.data.view(-1)[idx[:total_regrowth]] = 1
         elif self.pruning_type == "structure":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unrecognized Pruning Type !")
+        return new_mask
+    
+    def col_only_gradient_growth(self, name, new_mask, total_regrowth, weight):
+        if total_regrowth == 0:
+            return new_mask
+        grad = self.get_gradient_for_weights(weight)
+        grad = grad * (~new_mask)
+        if self.pruning_type == "structure":
+            p, q, r, c, k1, k2 = weight.shape
+
+            col_grad = np.linalg.norm(grad.cpu().data, ord=2, axis=(2, 4))
+            col_grad = col_grad.reshape(-1)
+            num_col_revive = int(total_regrowth / (r * k1))
+            # print(total_regrowth)
+            # print(num_col_revive)
+
+            y = np.sort(col_grad)[::-1]
+            idx = np.argsort(col_grad)[::-1]
+            print(y, idx)
+            mask_reshape = np.array(new_mask["col_mask"].cpu()).reshape(-1)
+            print(mask_reshape)
+
+            gradient_threshold = y[num_col_revive - 1]
+            print(gradient_threshold)
+            grad_threshold_idx = (num_col_revive - self.power_choice_margin - 1) if (num_col_revive - self.power_choice_margin - 1) > 0 else 0
+            gradient_threshold_margin = y[grad_threshold_idx].item()
+            print(gradient_threshold_margin)
+            # num_col_empty = new_mask["col_mask"].numel() - new_mask["col_mask"].sum().item()
+            print(idx[:num_col_revive])
+            mask_revive_reshape = mask_reshape.copy()
+            mask_revive_reshape[idx[:num_col_revive]] = True
+
+            col_grad = col_grad.reshape(p*q*c, k2)
+            mask_reshape = mask_reshape.reshape(p*q*c, k2)
+            mask_revive_reshape = mask_revive_reshape.reshape(p*q*c, k2)
+            
+            for i in range(mask_reshape.shape[0]):
+                if self.gradient_based_flag:
+                    current_k2_grad_with_mask = col_grad[i] * (~mask_reshape[i])
+                    num_of_less_threshold = np.sum((current_k2_grad_with_mask >= gradient_threshold ) & (current_k2_grad_with_mask < gradient_threshold_margin))
+                    if num_of_less_threshold != 0:
+                        print("We made it here")
+                        fixed_indices = np.where(col_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)
+                        num_of_zeros = np.sum(mask_revive_reshape[i] == True)
+                        mask_revive_reshape[i] = self.magnitude_based_col_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+                else:
+                    num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
+                    num_of_zeros = np.sum(mask_revive_reshape[i] == False)
+                    if num_of_ones <= self.power_choice_margin:
+                        fixed_indices = np.sort(np.where(mask_reshape[i] == True))
+                        mask_revive_reshape[i] = self.gradient_based_col_sparsity_patterns(num_of_zeros + num_of_ones, num_of_zeros, fixed_indices)
+                    else:
+                        current_k2_grad_with_mask = col_grad[i] * (~mask_reshape[i])
+                        sorted_indices_loop = np.argsort(current_k2_grad_with_mask)
+                        fixed_indices =  np.sort(np.concatenate([sorted_indices_loop[num_of_zeros + self.power_choice_margin:], np.where(mask_reshape[i] == True)[0]]))
+                        mask_revive_reshape[i] = self.gradient_based_col_sparsity_patterns(k2 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
+            new_mask["col_mask"][...] = torch.tensor(mask_revive_reshape.reshape(p, q, 1, c, 1, k2), device=self.device)
+        elif self.pruning_type == "unstructure":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unrecognized Pruning Type !")
+        return new_mask
+
+    def row_only_gradient_growth(self, name, new_mask, total_regrowth, weight):
+        if total_regrowth == 0:
+            return new_mask
+        grad = self.get_gradient_for_weights(weight)
+        grad = grad * (~new_mask)
+        if self.pruning_type == "structure":
+            p, q, r, c, k1, k2 = weight.shape
+
+            row_grad = np.norm(grad.cpu().data, p=2, dim=(3, 5))
+            row_grad = row_grad.reshape(-1)
+            num_row_revive = total_regrowth / (c * k2)
+
+            y = np.sort(row_grad)[::-1]
+            idx = np.argsort(row_grad)[::-1]
+            mask_reshape = new_mask["row_mask"].reshape(-2)
+
+            gradient_threshold = y[num_row_revive - 1]
+
+            grad_threshold_idx = (num_row_revive - self.power_choice_margin - 1) if (num_row_revive - self.power_choice_margin - 1) > 0 else 0
+            gradient_threshold_margin = y[grad_threshold_idx].item()
+
+            # num_col_empty = new_mask["col_mask"].numel() - new_mask["col_mask"].sum().item()
+            mask_revive_reshape = mask_reshape[idx[:num_row_revive]] = 1
+
+            row_grad = row_grad.reshape(p*q*r, k1)
+            mask_reshape = mask_reshape.reshape(p*q*r, k1)
+            mask_revive_reshape = mask_revive_reshape.reshape(p*q*r, k1)
+            
+            for i in range(mask_reshape.shape[0]):
+                if self.gradient_based_flag:
+                    current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
+                    num_of_less_threshold = np.sum((current_k1_grad_with_mask >= gradient_threshold ) & (current_k1_grad_with_mask < gradient_threshold_margin))
+                    if num_of_less_threshold != 0:
+                        fixed_indices = np.where(row_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)
+                        num_of_zeros = np.sum(mask_revive_reshape[i] == True)
+                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+                else:
+                    num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
+                    num_of_zeros = np.sum(mask_revive_reshape[i] == False)
+                    if num_of_ones <= self.power_choice_margin:
+                        fixed_indices = np.where(mask_reshape[i] == True)
+                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(num_of_zeros + num_of_ones, num_of_zeros, fixed_indices)
+                    else:
+                        current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
+                        sorted_indices_loop = np.argsort(current_k1_grad_with_mask)
+                        fixed_indices =  np.sort(np.concatenate([sorted_indices_loop[num_of_zeros + self.power_choice_margin:], np.where(mask_reshape[i] == True)]))
+                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(k1 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
+            new_mask["row_mask"] = torch.tensor(mask_revive_reshape.reshape(p, q, r, 1, k1, 1), device=self.device)
+        elif self.pruning_type == "unstructure":
             raise NotImplementedError
         else:
             raise ValueError("Unrecognized Pruning Type !")
