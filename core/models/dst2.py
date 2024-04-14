@@ -1108,8 +1108,9 @@ class DSTScheduler2(object):
             row_magnitude = weight.data.norm(p=2, dim=(3, 5)).flatten()  # [p*q*r*k1]
             # index in dim p, index in dim q, index in dim r, index in dim k1
             num_nonzero_rows = mask["row_mask"].sum().item()
+            margin = 0 if self.magnitude_based_flag else self.power_choice_margin
             num_row_remove_candidates = min(
-                num_row_remove + self.power_choice_margin, num_nonzero_rows
+                num_row_remove + margin, num_nonzero_rows
             )
             selected_row_indices = torch.argsort(row_magnitude, descending=True)[
                 :num_row_remove_candidates
