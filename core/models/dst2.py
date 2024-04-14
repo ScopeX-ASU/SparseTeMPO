@@ -147,6 +147,32 @@ class MultiMask(object):
 
 
 class DSTScheduler2(object):
+    _death_modes = {
+        "magnitude",
+        "random",
+        "momentum",
+        "momentum_neuron",
+        "gradient",
+        "magnitude_power",
+        "magnitude_crosstalk",
+        "magnitude_power_crosstalk",
+    }
+    _growth_modes = {
+        "random",
+        "momentum",
+        "momentum_neuron",
+        "gradient",
+        "gradient_power",
+        "gradient_crosstalk",
+        "gradient_power_crosstalk",
+    }
+    _pruning_types = {
+        "unstructure",
+        "structure_row",
+        "structure_col",
+        "structure_row_col",
+    }
+
     def __init__(
         self,
         optimizer,
@@ -159,7 +185,7 @@ class DSTScheduler2(object):
         args=None,
         spe_initial=None,
         train_loader=None,
-        pruning_type="structure",
+        pruning_type="structure_row",
         pi_shift_power=30,
         power_choice_margin=2,
         ADC_power=3,
@@ -173,31 +199,27 @@ class DSTScheduler2(object):
     ):
         ## Dynamic Sparse Training Scheduler
 
-        growth_modes = [
-            "random",
-            "momentum",
-            "momentum_neuron",
-            "gradient",
-            "row_only_gradient",
-            "col_only_gradient",
-        ]
-        if growth_mode not in growth_modes:
-            raise ValueError(
-                f"Growth mode expects {growth_modes}, but got {growth_mode}."
-            )
-
         self.args = args
         self.loader = train_loader
         self.modules = []
         self.optimizer = optimizer
 
         self.growth_death_ratio = growth_death_ratio
+        if growth_mode not in self._growth_modes:
+            raise ValueError(
+                f"Growth mode expects {self._growth_modes}, but got {growth_mode}."
+            )
         self.growth_mode = growth_mode  # gradient
         self.redistribution_mode = redistribution_mode  # momentum
         self.spe_initial = spe_initial  # initial masks made by SNIP
         self.snip_masks = None  # masks made by SNIP during training
         self.nonzeros_index = None
+        if pruning_type not in self._pruning_types:
+            raise ValueError(
+                f"pruning_type expects {self._pruning_types}, but got {pruning_type}."
+            )
         self.pruning_type = pruning_type
+
         self.update_frequency = update_frequency
         self.T_max = T_max
         self.group = group
@@ -213,6 +235,11 @@ class DSTScheduler2(object):
         self.newly_masks = {}
         # death
         self.death_mode = death_mode  # magnitude
+        if death_mode not in self._death_modes:
+            raise ValueError(
+                f"Death mode expects {self._death_modes}, but got {death_mode}."
+            )
+
         self.death_rate = death_rate
         self.death_rate_decay = death_rate_decay
         self.name2death_rate = {}
@@ -244,10 +271,10 @@ class DSTScheduler2(object):
         module,
         density: float,
         init_mode: str = "fixed_ERK",
-        pruning_type="unstructure",
         mask_path=None,
+        pruning_type: str | None = None,
     ):
-
+        pruning_type = pruning_type or self.pruning_type
         if pruning_type in {"unstructure"}:
             self.modules.append(module)
             index = len(self.masks)
@@ -266,7 +293,7 @@ class DSTScheduler2(object):
             logger.info(f"created pruning mask.")
             self.unstructure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
-        elif pruning_type in {"structure"}:
+        elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
             self.modules.append(module)
             index = len(self.masks)
             for name, m in module.named_modules():
@@ -295,7 +322,7 @@ class DSTScheduler2(object):
         else:
             raise ValueError("unrecognize pruning type")
 
-    def step(self, pruning_type=None):
+    def step(self, pruning_type: str | None = None):
         pruning_type = pruning_type or self.pruning_type
         ## apply pruning mask (inplace weight tensor modification) and update death rate
         self.apply_mask(pruning_type=pruning_type)
@@ -313,19 +340,20 @@ class DSTScheduler2(object):
         if self.steps % self.update_frequency == 0 and self.steps < self.T_max:
             self.at_end_of_epoch(pruning_type)
 
-    def at_end_of_epoch(self, pruning_type="unstructure", indicator_list=None):
+    def at_end_of_epoch(
+        self, indicator_list=None, pruning_type: str | None = None
+    ) -> None:
+        pruning_type = pruning_type or self.pruning_type
         if pruning_type == "unstructure":
             self.update_and_apply_mask()
             _, _ = self.update_fired_masks()
             self.print_nonzero_counts()
-        elif pruning_type == "structure":
+        elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
             self.update_and_apply_mask(pruning_type, indicator_list)
             _, _ = self.update_fired_masks(pruning_type="structure")
-        elif pruning_type == "structure_new":
-            self.update_and_apply_mask(pruning_type)
-            _, _ = self.update_fired_masks(pruning_type="structure_new")
+
         else:
-            raise ValueError("Unrecognized Pruning Type !")
+            raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
 
     def resume(self, checkpoint, pruning_type, density):
 
@@ -534,19 +562,19 @@ class DSTScheduler2(object):
 
     #     return {key: value for key, value in sorted(power_dict.items())}
 
-    def find_least_crosstalk_pattern(self, masks: Tensor) -> Tensor:
+    def find_least_crosstalk_pattern(self, masks: Tensor) -> Tuple[Tensor, float]:
         ## among the possible patterns with min power, find the one with least crosstalk
         ## masks: [#combinations, array_length]
+        ## best_patterns [#num, array_length], best_score: float
         if masks.shape[0] == 1:
             return masks[0]
-        best_score = -float("inf")
-        best_mask = None
+        scores = []
         for mask in masks:
             score = self.calc_crosstalk_score(mask)
-            if score > best_score:
-                best_score = score
-                best_mask = mask
-        return best_mask
+            scores.append(score)
+        scores = torch.tensor(scores)
+        max_score = scores.max().item()
+        return masks[scores == max_score], max_score
 
     def calc_crosstalk_score(self, mask: Tensor) -> float:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
@@ -744,12 +772,45 @@ class DSTScheduler2(object):
         logger.info(f"Nonzero counts:\n\t{self.name2nonzeros}")
         logger.info(f"Param counts:\n\t{params}")
 
-    def structure_init(
-        self, mode="fixed_ERK", density=0.05, erk_power_scale=1.0, mask_file=None
+    def _structure_init_random(self, density: float = 0.05) -> None:
+        if self.pruning_type == "structure_row":
+            for mask in self.masks.values():
+                mask["row_mask"].bernoulli_(p=density)
+
+        elif self.pruning_type == "structure_col":
+            for mask in self.masks.values():
+                mask["col_mask"].bernoulli_(p=density)
+        elif self.pruning_type == "structure_row_col":
+            for mask in self.masks.values():
+                mask["row_mask"].bernoulli_(p=density**0.5)
+                mask["col_mask"].bernoulli_(p=density**0.5)
+        else:
+            raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
+
+    def find_least_switch_power_patterns(
+        self, patterns: Tensor
+    ) -> Tuple[Tensor, float]:
+        powers = self.cal_ports_power(patterns)  # [#combinations]
+        min_power_patterns, min_power = self.find_minimal_power_pattern(
+            patterns, powers
+        )
+        return min_power_patterns, min_power
+
+    def _structure_init_power_crosstalk(
+        self, density: float = 0.05, modes: List = ["power", "crosstalk"]
     ) -> None:
-        if mode == "fixed_ERK":
-            raise NotImplementedError
-        elif mode == "col_power_efficient":
+        if self.pruning_type == "structure_row":
+            for name, mask in self.masks.items():
+                row_num = k1 = self.params[name].shape[-2]
+                empty_row_num = int(round(row_num * (1 - density)))
+                patterns = self.find_sparsity_patterns(
+                    row_num, empty_row_num
+                )  # [#combinations, col_num]
+                for mode in modes:
+                    if mode == "crosstalk":
+                        patterns, _ = self.find_least_crosstalk_pattern(patterns)
+                mask["row_mask"][..., :, 0] = patterns[0]
+        elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
                 ## assume all blocks have the same initial sparsity mask with min power
                 ## just select k2' from k2 with min power
@@ -758,66 +819,96 @@ class DSTScheduler2(object):
                 patterns = self.find_sparsity_patterns(
                     col_num, empty_col_num
                 )  # [#combinations, col_num]
-                powers = self.cal_ports_power(patterns)  # [#combinations]
-                min_power_patterns, _ = self.find_minimal_power_pattern(
-                    patterns, powers
-                )
-                best_pattern = self.find_least_crosstalk_pattern(min_power_patterns)
-                mask["col_mask"][..., :] = best_pattern
-        elif mode == "row_power_efficient":
-            for name, mask in self.masks.items():
-                row_num = k1 = self.params[name].shape[-2]
-                empty_row_num = int(round(col_num * (1 - density)))
-                patterns = self.find_sparsity_patterns(
-                    row_num, empty_row_num
-                )  # [#combinations, col_num]
-                powers = self.cal_ports_power(patterns)  # [#combinations]
-                min_power_patterns, _ = self.find_minimal_power_pattern(
-                    patterns, powers
-                )
-                best_pattern = self.find_least_crosstalk_pattern(min_power_patterns)
-                mask["row_mask"][..., :, 0] = best_pattern
-        elif mode == "row_col_power_efficient":
+                for mode in modes:
+                    if mode == "power":
+                        patterns, _ = self.find_least_switch_power_patterns(patterns)
+                    elif mode == "crosstalk":
+                        patterns, _ = self.find_least_crosstalk_pattern(patterns)
+                    else:
+                        raise NotImplementedError
+                mask["col_mask"][..., :] = patterns[0]
+        elif self.pruning_type == "structure_row_col":
             for name, mask in self.masks.items():
                 row_num, col_num = k1, k2 = self.params[name].shape[-2:]
                 max_empty_col_num = int(round(col_num * (1 - density)))
 
-                best_power = float("inf")
+                best_score = float("-inf")  # higher the better score
+                best_row_patterns = best_col_patterns = None
+
                 # find the integer solution (col, row) of `(k2-col) * (k1-row) = k1 * k2 * density`
                 for empty_col_num in range(max_empty_col_num + 1):
-                    col_pattern = self.find_sparsity_patterns(col_num, empty_col_num)
-                    col_powers = self.cal_ports_power(col_pattern)
-                    col_possible_patterns, lowest_switch_power = (
-                        self.find_minimal_power_pattern(col_pattern, col_powers)
-                    )
-                    # to match density: (k2-col) * (k1-row) = k1 * k2 * density
-                    # row = k1 - (k1*k2*density)/(k2-col)
                     empty_row_num = int(
                         round(k1 - (k1 * k2 * density) / (k2 - empty_col_num))
                     )
 
-                    TIA_ADC_power = self.calc_TIA_ADC_power(
-                        row_num, empty_row_num, self.TIA_power, self.ADC_power
-                    )
-                    HDAC_power = self.calc_HDAC_power(
-                        col_num, empty_col_num, self.HDAC_power
-                    )
+                    col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
+                    row_patterns = self.find_sparsity_patterns(row_num, empty_row_num)
+                    score = {}
+                    for mode in modes:
+                        if mode == "power":
+                            col_patterns, switch_power = (
+                                self.find_least_switch_power_patterns(col_patterns)
+                            )
+                            TIA_ADC_power = self.calc_TIA_ADC_power(
+                                row_num, empty_row_num, self.TIA_power, self.ADC_power
+                            )
+                            HDAC_power = self.calc_HDAC_power(
+                                col_num, empty_col_num, self.HDAC_power
+                            )
+                            score["power"] = -(
+                                switch_power + TIA_ADC_power + HDAC_power
+                            )
+                        elif mode == "crosstalk":
+                            col_patterns, col_crosstalk = (
+                                self.find_least_crosstalk_pattern(col_patterns)
+                            )
+                            row_patterns, row_crosstalk = (
+                                self.find_least_crosstalk_pattern(row_patterns)
+                            )
 
-                    col_power = HDAC_power + lowest_switch_power
-                    row_power = TIA_ADC_power
-                    total_power = col_power + row_power
+                            score["crosstalk"] = col_crosstalk + row_crosstalk
+                        else:
+                            raise NotImplementedError
 
-                    if total_power < best_power:
-                        best_power = total_power
-                        best_col_pattern = self.find_least_crosstalk_pattern(
-                            col_possible_patterns
-                        )
-                        best_row_pattern = self.find_least_crosstalk_pattern(
-                            self.find_sparsity_patterns(row_num, empty_row_num)
-                        )
+                    # prioritize the first mode
+                    if score[modes[0]] > best_score:
+                        best_score = score[modes[0]]
+                        best_row_patterns = row_patterns
+                        best_col_patterns = col_patterns
 
-                self.masks[name]["col_mask"][..., :] = best_col_pattern
-                self.masks[name]["row_mask"][..., :, 0] = best_row_pattern
+                self.masks[name]["col_mask"][..., :] = best_col_patterns[0]
+                self.masks[name]["row_mask"][..., :, 0] = best_row_patterns[0]
+        else:
+            raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
+
+    def structure_init(
+        self, mode="fixedERK", density=0.05, erk_power_scale=1.0, mask_file=None
+    ) -> None:
+        assert mode in {
+            "fixedERK",
+            "random",
+            "power",
+            "power_crosstalk",
+            "crosstalk",
+            "crosstalk_power",
+        }
+        modes = modes.split("_")
+        if self.pruning_type == "structure_row":
+            modes = [m for m in modes if m != "power"]
+            if len(modes) == 0:
+                modes = ["random"]
+            logger.info(
+                f"{self.pruning_type} not support power, init mode reduced to {modes}"
+            )
+
+        if mode == "fixed_ERK":
+            raise NotImplementedError
+        elif mode == "random":
+            self._structure_init_random(density)
+        elif mode in {"power", "crosstalk", "power_crosstalk", "crosstalk_power"}:
+            self._structure_init_power_crosstalk(density, modes)
+        else:
+            raise ValueError(f"Unrecognized Init Mode {mode}")
 
         self.apply_mask()
         self.fired_masks = {
@@ -1109,9 +1200,7 @@ class DSTScheduler2(object):
             # index in dim p, index in dim q, index in dim r, index in dim k1
             num_nonzero_rows = mask["row_mask"].sum().item()
             margin = 0 if self.magnitude_based_flag else self.power_choice_margin
-            num_row_remove_candidates = min(
-                num_row_remove + margin, num_nonzero_rows
-            )
+            num_row_remove_candidates = min(num_row_remove + margin, num_nonzero_rows)
             selected_row_indices = torch.argsort(row_magnitude, descending=True)[
                 :num_row_remove_candidates
             ]
@@ -1119,9 +1208,8 @@ class DSTScheduler2(object):
                 selected_row_indices, mask["row_mask"].shape
             )  # tuple of indices in each dimension of row_mask
 
-            if (
-                self.magnitude_based_flag
-            ):  # only magnitude sorting, no crosstalk minimization
+            # only magnitude sorting, no crosstalk minimization
+            if self.magnitude_based_flag:
                 mask["row_mask"][selected_row_indices] = 0
                 return mask
 
