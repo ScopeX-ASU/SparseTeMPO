@@ -1430,9 +1430,9 @@ class DSTScheduler2(nn.Module):
             ## to make sure pruned magnitude is always smaller than unpruned vectors (which can also have 0 magnitude)
             ## we set pruned magnitude to -1
             if death:
-                ## to make sure the pruned weight always have smaller magnitude than unpruned one (which can also have 0 magnitude)
-                ## we set pruned weight magnitude to -1
-                row_magnitude[~mask["row_mask"]] = -1
+                ## to make sure the pruned weight always have larger magnitude than unpruned one
+                ## we set pruned weight magnitude to 1e8
+                row_magnitude[~mask["row_mask"]] = 1e8
             else:
                 ## to make sure the pruned grad always have larger magnitude than unpruned one (which can also have 0 magnitude)
                 ## we set unpruned grad magnitude to -1
@@ -1450,9 +1450,9 @@ class DSTScheduler2(nn.Module):
             num_row_select_candidates = min(num_row_select + margin, num_to_select_rows)
 
             ## select a slightly larger candidates pool
-            selected_row_indices_flat = torch.argsort(row_magnitude, descending=True)[
-                :num_row_select_candidates
-            ]
+            selected_row_indices_flat = torch.argsort(
+                row_magnitude, descending=False if death else True
+            )[:num_row_select_candidates]
 
             ## convert from flattened indices to high-dimensional indices to match row_mask
             selected_row_indices = torch.unravel_index(
@@ -1596,9 +1596,9 @@ class DSTScheduler2(nn.Module):
             )  # [p, q, 1, c, 1, k2]
 
             if death:
-                ## to make sure the pruned weight always have smaller magnitude than unpruned one (which can also have 0 magnitude)
-                ## we set pruned weight magnitude to -1
-                col_magnitude[~mask["col_mask"]] = -1
+                ## to make sure the pruned weight always have larger magnitude than unpruned one
+                ## we set pruned weight magnitude to 1e8
+                col_magnitude[~mask["col_mask"]] = 1e8
             else:
                 ## to make sure the pruned grad always have larger magnitude than unpruned one (which can also have 0 magnitude)
                 ## we set unpruned grad magnitude to -1
@@ -1615,9 +1615,9 @@ class DSTScheduler2(nn.Module):
             num_col_select_candidates = min(num_col_select + margin, num_to_select_cols)
 
             ## select a slightly larger candidates pool
-            selected_col_indices = torch.argsort(col_magnitude, descending=True)[
-                :num_col_select_candidates
-            ]
+            selected_col_indices = torch.argsort(
+                col_magnitude, descending=False if death else True
+            )[:num_col_select_candidates]
             ## convert from flattened indices to high-dimensional indices to match col_mask
             selected_col_indices = torch.unravel_index(
                 selected_col_indices, mask["col_mask"].shape
@@ -1864,12 +1864,13 @@ class DSTScheduler2(nn.Module):
 
     def plot_mask(self, filename: str, save_fig=False):
         num_masks = len(self.masks)
-        fig, axes = plt.subplots(3, num_masks, figsize=(4*num_masks, 10))
+        fig, axes = plt.subplots(3, num_masks, figsize=(4 * num_masks, 10))
         if num_masks == 1:
             axes = [[ax] for ax in axes]
         total_power, powers = self.get_total_power()
         total_crosstalk, crosstalks = self.get_total_crosstalk()
         for i, (name, mask) in enumerate(self.masks.items()):
+            k1, k2 = mask["row_mask"].shape[-2], mask["col_mask"].shape[-1]
             mask = mask.data.permute(0, 2, 4, 1, 3, 5).flatten(0, 2).flatten(1)
             axes[0][i].imshow(mask.data.cpu().numpy(), cmap="gray")
             axes[0][i].set_title(
@@ -1895,6 +1896,12 @@ class DSTScheduler2(nn.Module):
             )
             axes[2][i].imshow(grad.data.abs().cpu().numpy(), cmap="gray")
             axes[2][i].set_title(name + " abs(Grad)")
+
+            for j in range(len(axes)):
+                for y in np.arange(-0.5, mask.shape[0] - 0.4, k1):
+                    axes[j][i].plot([-0.5, mask.shape[1] - 0.5], [y, y], "b")
+                for x in np.arange(-0.5, mask.shape[1] - 0.4, k2):
+                    axes[j][i].plot([x, x], [-0.5, mask.shape[0] - 0.5], "b")
 
         if save_fig:
             ensure_dir("./unitest/figs")
