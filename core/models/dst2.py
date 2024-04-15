@@ -480,6 +480,7 @@ class DSTScheduler2(nn.Module):
         if DEBUG:
             print("ports_array shape:", ports_array.shape)
             print("n_levels:", n_levels)
+            print(ports_array)
         for level in range(n_levels):
             ## e.g., k=8, n_levels=3
             ## L0: [..., 2, <2, 2>] sum[-2, -1],
@@ -487,6 +488,7 @@ class DSTScheduler2(nn.Module):
             ## L2: [..., 2, 2, 2]   sum[],
             sum_dims = list(range(level - n_levels + 1, 0, 1))
             if DEBUG:
+                print(f"---------------- level {level}")
                 print(f"sum_dims", sum_dims)
             if len(sum_dims) > 0:
                 ports_sum = ports_array.sum(dim=sum_dims)
@@ -494,6 +496,9 @@ class DSTScheduler2(nn.Module):
                 ports_sum = ports_array
 
             ratios = ports_sum[..., 0:1] / ports_sum.sum(-1, keepdim=True)
+            ## note that if the ratio is inf, i.e., two port of MZI are all 0
+            ## then its ratio should be set to 50% to minimize power.
+            ratios[torch.isnan(ratios)] = 0.5
 
             ## L0: [..., <2>]       sum[-1],
             ## L1: [..., <2, 2>]    sum[-2, -1],
@@ -501,12 +506,18 @@ class DSTScheduler2(nn.Module):
             sum_dims = list(range(-1 - level, 0, 1))
             ## cos^2((delta_phi + pi/2)/2) = ratio
             ## |delta_phi| = |arccos(sqrt(ratio)) * 2 - pi/2|
-            power += (
+            p = (
                 ratios.sqrt_()
                 .acos().mul_(2).sub_(np.pi/2).abs_()
                 .mul_(self.pi_shift_power / np.pi)
                 .sum(dim=sum_dims)
             )  # [#combinations]
+            print("ratio", ratios)
+            print("p", p)
+            power += p
+        
+        print(power)
+    
         return power  # [#combinations]
 
     @lru_cache(maxsize=32)
@@ -1193,9 +1204,7 @@ class DSTScheduler2(nn.Module):
 
         if num_remove == 0.0:
             return mask
-
-        # num_zeros = self.name2zeros[name]
-
+        
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
         num_col_remove = int(round(num_remove / (r * k1)))  # num of col p*q*c*k2
@@ -1243,10 +1252,12 @@ class DSTScheduler2(nn.Module):
                         for (p, q, c) in affected_mask_indices
                     )
                 elif opt == "power":
-                    ps, qs, cs = zip(affected_mask_indices)
+                    if DEBUG:
+                        print(affected_mask_indices)
+                    ps, qs, cs = zip(*affected_mask_indices)
                     gain = self.cal_ports_power(
                         mask["col_mask"][ps, qs, 0, cs, 0, :]
-                    ) - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :])
+                    ).sum().item() - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :]).sum().item()
                 else:
                     raise NotImplementedError
                 return gain  # higher the better
@@ -1296,6 +1307,12 @@ class DSTScheduler2(nn.Module):
                     elif gain == best_gain:
                         best_col_masks.append(col_mask)
                         selected_range.append(indices)
+                    if DEBUG:
+                        print(f"-----------------\niter {i} {opt}")
+                        print(f"selected indices", indices)
+                        print(f"selected col indices", selected_col_indices_cand)
+                        print(f"gain", gain)
+                        print(f"best gain", best_gain)
 
                 # shrink the search range to the selected range
                 search_range = selected_range
