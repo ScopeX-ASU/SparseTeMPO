@@ -419,7 +419,7 @@ class DSTScheduler(object):
         return ports_cal
 
     def col_sparsity_patterns(self, array_length, num_zeros):
-        assert math.log2(array_length).is_integer(), "Provided length is not a power of 2." 
+        # assert math.log2(array_length).is_integer(), "Provided length is not a power of 2." 
         # Ensure that the number of zeros does not exceed the array length
         if num_zeros > array_length:
             raise ValueError("The number of zeros cannot exceed the total array length.")
@@ -483,6 +483,15 @@ class DSTScheduler(object):
         possible_patterns, _ = self.find_minimal_power_pattern(possible_patterns, powers)
         return self.find_least_crosstalk_pattern(possible_patterns)
 
+    def gradient_based_row_sparsity_patterns(self, remain_length, num_of_zeros, fixed_index):
+        fixed_index = np.array(fixed_index).reshape(-1)
+        indices = np.arange(fixed_index.size)
+        fixed_index = fixed_index - indices
+        possible_patterns = self.row_sparsity_patterns(remain_length, num_of_zeros)
+        if fixed_index.size != 0:
+            possible_patterns = np.insert(possible_patterns, fixed_index, 1, axis=1)
+        return self.find_least_crosstalk_pattern(possible_patterns)
+
     def magnitude_based_row_sparsity_patterns(self, remain_length, num_of_zeros, fixed_index):
         fixed_index = np.array(fixed_index).reshape(-1)
         indices = np.arange(fixed_index.size)
@@ -500,54 +509,6 @@ class DSTScheduler(object):
         # print(lowest_power_masks)
         return lowest_power_masks, lowest_power
 
-    # def _possible_patterns(self, num_zeros, array_length):
-    #     if num_zeros > array_length:
-    #         return "The number of zeros cannot exceed the total array length."
-
-    #     # Generate all possible positions for zeros in the array
-    #     indices = range(array_length)
-    #     zero_positions = list(combinations(indices, num_zeros))
-    #     patterns = []
-    #     for positions in zero_positions:
-    #         # Initialize the array with all ones
-
-    #         array = [1] * array_length
-    #         # Place zeros in the specified positions
-
-    #         for pos in positions:
-    #             array[pos] = 0
-
-    #         patterns.append(array)
-
-    #     return patterns
-
-    # def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
-    #     # Ensure that the number of zeros does not exceed the array length
-
-    #     if num_zeros > array_length:
-    #         return "The number of zeros cannot exceed the total array length."
-
-    #     # Generate all possible positions for zeros in the array
-    #     indices = range(array_length)
-    #     zero_positions = list(combinations(indices, num_zeros))
-    #     power_dict = defaultdict(list)
-
-    #     for positions in zero_positions:
-    #         # Initialize the array with all ones
-
-    #         array = [1] * array_length
-    #         # Place zeros in the specified positions
-
-    #         for pos in positions:
-    #             array[pos] = 0
-
-    #         # Calculate the power for this array configuration
-    #         power = self._calculate_total_and_upper_ports(array)
-
-    #         # Add the power and array pair to the dictionary
-    #         power_dict[power].append(array)
-
-    #     return {key: value for key, value in sorted(power_dict.items())}
 
     def find_least_crosstalk_pattern(self, masks):
         if len(masks) == 1:
@@ -1064,7 +1025,9 @@ class DSTScheduler(object):
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
         num_col_remove = num_remove / (r * k1) # num of col p*q*c*k2
-        num_col_empty = mask["col_mask"].sum().item() - mask["col_mask"].numel() #get col num from mask
+        # num_col_empty = mask["col_mask"].numel() - mask["col_mask"].sum().item()#get col num from mask
+        num_col_empty = mask["col_mask"].numel() - mask["col_mask"].sum().item()
+        print(num_col_empty)
         # [p, q, c, k2]
         col_magnitude = np.linalg.norm(weight.cpu().data, ord=2, axis=(2,4))
         col_magnitude = col_magnitude.reshape(-1)
@@ -1077,7 +1040,11 @@ class DSTScheduler(object):
         
         threshold = x[k - 1].item()
 
+        print(f"This is threshold:{threshold}")
+
         threshold_mag_power = x[k + self.power_choice_margin - 1].item()
+
+        print(threshold_mag_power)
         
         new_col_mask = (col_magnitude > threshold)
 
@@ -1089,7 +1056,7 @@ class DSTScheduler(object):
                 current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
                 num_of_less_threshold = np.sum((current_k2_with_mask <= threshold_mag_power) & (current_k2_with_mask > threshold))
                 if num_of_less_threshold != 0:
-                    fixed_indices = np.sort(np.where(col_magnitude[i] > threshold_mag_power))
+                    fixed_indices = np.sort(np.where(col_magnitude[i] > threshold_mag_power)[0])
                     num_of_zeros = np.sum(new_col_mask[i] == False)
                     new_col_mask[i] = self.magnitude_based_col_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
             else:
@@ -1101,6 +1068,12 @@ class DSTScheduler(object):
                     possible_patterns, _ = self.find_minimal_power_pattern(possible_patterns, powers)
                     new_col_mask[i] = self.find_least_crosstalk_pattern(possible_patterns)
                 else:
+                    # [0, 0, 0, 1, 1, 0, 1, 1]
+                    # [0, 0, 0, 0, 1, 1]
+                    # all patterns(4 0s  2 1s)
+                    # np.insert[x ,x ,x ,1, 1, x, x, x]
+                    # find best power from all paterns
+                    # find least cross talks
                     current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
                     sorted_indices_loop = np.argsort(current_k2_with_mask)
                     fixed_indices = np.sort(sorted_indices_loop[num_of_zeros + self.power_choice_margin:])
@@ -1128,7 +1101,7 @@ class DSTScheduler(object):
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
         num_row_remove = num_remove / (c * k2) # num of row p*q*r*k1
-        num_row_empty = mask["row_mask"].sum().item() - mask["row_mask"].numel() #get row num from mask
+        num_row_empty = mask["row_mask"].numel() - mask["row_mask"].sum().item() #get row num from mask
         # [p, q, c, k2]
         row_magnitude = np.linalg.norm(weight.cpu().data, ord=2, axis=(3,5))
         row_magnitude = row_magnitude.reshape(-1)
@@ -1156,7 +1129,7 @@ class DSTScheduler(object):
                 num_of_less_threshold = np.sum((current_k1_with_mask <= threshold_mag_power) & (current_k1_with_mask > threshold))
                 if num_of_less_threshold != 0:
                     print(type(row_magnitude[i]), type(threshold_mag_power))
-                    fixed_indices = np.sort(np.where(row_magnitude[i] > threshold_mag_power))
+                    fixed_indices = np.sort(np.where(row_magnitude[i] > threshold_mag_power)[0])
                     print(fixed_indices[0])
                     num_of_zeros = np.sum(new_row_mask[i] == False)
                     new_row_mask[i] = self.magnitude_based_row_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
@@ -1296,14 +1269,14 @@ class DSTScheduler(object):
                     num_of_less_threshold = np.sum((current_k2_grad_with_mask >= gradient_threshold ) & (current_k2_grad_with_mask < gradient_threshold_margin))
                     if num_of_less_threshold != 0:
                         print("We made it here")
-                        fixed_indices = np.where(col_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)
+                        fixed_indices = np.where(col_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)[0]
                         num_of_zeros = np.sum(mask_revive_reshape[i] == True)
-                        mask_revive_reshape[i] = self.magnitude_based_col_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+                        mask_revive_reshape[i] = self.gradient_based_col_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
                 else:
                     num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
                     num_of_zeros = np.sum(mask_revive_reshape[i] == False)
                     if num_of_ones <= self.power_choice_margin:
-                        fixed_indices = np.sort(np.where(mask_reshape[i] == True))
+                        fixed_indices = np.sort(np.where(mask_reshape[i] == True))[0]
                         mask_revive_reshape[i] = self.gradient_based_col_sparsity_patterns(num_of_zeros + num_of_ones, num_of_zeros, fixed_indices)
                     else:
                         current_k2_grad_with_mask = col_grad[i] * (~mask_reshape[i])
@@ -1339,7 +1312,8 @@ class DSTScheduler(object):
             gradient_threshold_margin = y[grad_threshold_idx].item()
 
             # num_col_empty = new_mask["col_mask"].numel() - new_mask["col_mask"].sum().item()
-            mask_revive_reshape = mask_reshape[idx[:num_row_revive]] = 1
+            mask_revive_reshape = mask_reshape.copy()
+            mask_revive_reshape[idx[:num_row_revive]] = True
 
             row_grad = row_grad.reshape(p*q*r, k1)
             mask_reshape = mask_reshape.reshape(p*q*r, k1)
@@ -1350,20 +1324,20 @@ class DSTScheduler(object):
                     current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
                     num_of_less_threshold = np.sum((current_k1_grad_with_mask >= gradient_threshold ) & (current_k1_grad_with_mask < gradient_threshold_margin))
                     if num_of_less_threshold != 0:
-                        fixed_indices = np.where(row_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)
+                        fixed_indices = np.where(row_grad[i] >= gradient_threshold_margin | mask_reshape[i]==True)[0]
                         num_of_zeros = np.sum(mask_revive_reshape[i] == True)
-                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
+                        mask_revive_reshape[i] = self.gradient_based_row_sparsity_patterns(num_of_less_threshold + num_of_zeros, num_of_zeros, fixed_indices)
                 else:
                     num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
                     num_of_zeros = np.sum(mask_revive_reshape[i] == False)
                     if num_of_ones <= self.power_choice_margin:
-                        fixed_indices = np.where(mask_reshape[i] == True)
-                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(num_of_zeros + num_of_ones, num_of_zeros, fixed_indices)
+                        fixed_indices = np.where(mask_reshape[i] == True)[0]
+                        mask_revive_reshape[i] = self.gradient_based_row_sparsity_patterns(num_of_zeros + num_of_ones, num_of_zeros, fixed_indices)
                     else:
                         current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
                         sorted_indices_loop = np.argsort(current_k1_grad_with_mask)
-                        fixed_indices =  np.sort(np.concatenate([sorted_indices_loop[num_of_zeros + self.power_choice_margin:], np.where(mask_reshape[i] == True)]))
-                        mask_revive_reshape[i] = self.magnitude_based_row_sparsity_patterns(k1 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
+                        fixed_indices =  np.sort(np.concatenate([sorted_indices_loop[num_of_zeros + self.power_choice_margin:], np.where(mask_reshape[i] == True)[0]]))
+                        mask_revive_reshape[i] = self.gradient_based_row_sparsity_patterns(k1 - fixed_indices.shape[0], num_of_zeros, fixed_indices)
             new_mask["row_mask"] = torch.tensor(mask_revive_reshape.reshape(p, q, r, 1, k1, 1), device=self.device)
         elif self.pruning_type == "unstructure":
             raise NotImplementedError

@@ -28,6 +28,7 @@ def test_DST_scheduler():
 
     dst_scheduler.set_magnitude_based_flag(False)
     dst_scheduler.set_gradient_based_flag(False)
+    
     x = torch.randn(1, 1, 8, 8, device=device)
     y = model(x)
     y.mean().backward()
