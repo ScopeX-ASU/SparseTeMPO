@@ -42,6 +42,16 @@ checkpoint:
 
 model:
   name: "TeMPO_CNN"
+  conv_cfg:
+    miniblock: [2, 2, 4, 4]
+  linear_cfg:
+    miniblock: [2, 2, 4, 4]
+  kernel_list: [16, 16]
+  kernel_size_list: [1, 1]
+  hidden_list: []
+  stride_list: [1, 1]
+  padding_list: [1, 1]
+  pool_out_size: 5
 
 debug:
   verboise: 1
@@ -60,3 +70,4 @@ dst_scheduler:
   density: 0.8
   max_combinations: 100
   init_mode: uniform_power_crosstalk
+  power_choice_margin: 1

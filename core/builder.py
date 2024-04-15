@@ -397,6 +397,7 @@ def make_dst_scheduler(
         update_frequency=cfg.update_frequency,
         max_combinations=cfg.max_combinations,
         T_max=cfg.T_max * len(train_loader) * configs.run.n_epochs,
+        power_choice_margin=cfg.power_choice_margin,
         device=model.device,
     )
     scheduler.add_module(

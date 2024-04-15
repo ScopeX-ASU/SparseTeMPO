@@ -1242,7 +1242,7 @@ class DSTScheduler2(nn.Module):
                     if i >= self.max_combinations:
                         break
                     indices = torch.tensor(indices)
-                    selected_col_indices = tuple(
+                    selected_col_indices_cand = tuple(
                         col_index[indices] for col_index in selected_col_indices
                     )
                     ## check score for this combination
@@ -1250,16 +1250,16 @@ class DSTScheduler2(nn.Module):
 
                     ## first try to prune cols in a cloned col_mask
                     col_mask = mask["col_mask"].clone()
-                    col_mask[selected_col_indices] = 0
+                    col_mask[selected_col_indices_cand] = 0
 
                     ## after pruning, calculate gain on affected row_masks
                     affected_mask_indices = set()  # use set to avoid duplicate indices
                     for col_id in range(num_col_remove):
                         affected_mask_indices.add(
                             (
-                                selected_col_indices[0][col_id].item(),  # p
-                                selected_col_indices[1][col_id].item(),  # q
-                                selected_col_indices[3][col_id].item(),  # c
+                                selected_col_indices_cand[0][col_id].item(),  # p
+                                selected_col_indices_cand[1][col_id].item(),  # q
+                                selected_col_indices_cand[3][col_id].item(),  # c
                             )
                         )
                     affected_mask_indices = tuple(affected_mask_indices)
@@ -1350,20 +1350,20 @@ class DSTScheduler2(nn.Module):
                     break
 
                 indices = torch.tensor(indices)
-                selected_row_indices = tuple(
+                selected_row_indices_cand = tuple(
                     row_index[indices] for row_index in selected_row_indices
                 )
 
                 if DEBUG:
                     print(f"-----------------\niter {i}")
                     print(f"selected indices", indices)
-                    print(f"selected row indices", selected_row_indices)
+                    print(f"selected row indices", selected_row_indices_cand)
                 ## check crosstalk score for this combination
                 ## crosstalk can be calculated based on its index along k1 dimension
 
                 ## first try to prune rows in a cloned row_mask
                 row_mask = mask["row_mask"].clone()
-                row_mask[selected_row_indices] = 0
+                row_mask[selected_row_indices_cand] = 0
 
                 total_crosstalk_gain = 0
                 ## after pruning, calculate crosstalk gain on affected row_masks
@@ -1371,9 +1371,9 @@ class DSTScheduler2(nn.Module):
                 for row_id in range(num_row_remove):
                     affected_mask_indices.add(
                         (
-                            selected_row_indices[0][row_id].item(),  # p
-                            selected_row_indices[1][row_id].item(),  # q
-                            selected_row_indices[2][row_id].item(),  # r
+                            selected_row_indices_cand[0][row_id].item(),  # p
+                            selected_row_indices_cand[1][row_id].item(),  # q
+                            selected_row_indices_cand[2][row_id].item(),  # r
                         )
                     )
 
@@ -1421,15 +1421,17 @@ class DSTScheduler2(nn.Module):
                                 0,
                             ].long(),
                         )
+                
+                if total_crosstalk_gain > best_crosstalk_gain:
+                    best_crosstalk_gain = total_crosstalk_gain
+                    best_row_mask = row_mask
                 if DEBUG:
                     print(f"affected_mask_indices", affected_mask_indices)
                     print(f"total_crosstalk_gain", total_crosstalk_gain)
                     print(f"best_crosstalk_gain", best_crosstalk_gain)
-                if total_crosstalk_gain > best_crosstalk_gain:
-                    best_crosstalk_gain = total_crosstalk_gain
-                    best_row_mask = row_mask
-                mask["row_mask"] = best_row_mask
-                return mask
+
+            mask["row_mask"] = best_row_mask
+            return mask
         elif self.group == "block":
             ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
             ## through this will limit accuracy, but it will faster.
