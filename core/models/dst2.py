@@ -477,19 +477,19 @@ class DSTScheduler2(nn.Module):
         n_levels = int(np.log2(ports_array.shape[1]))
         ports_array = ports_array.view([-1] + [2] * n_levels)
         power = 0
-        if DEBUG:
-            print("ports_array shape:", ports_array.shape)
-            print("n_levels:", n_levels)
-            print(ports_array)
+        # if DEBUG:
+        #     print("ports_array shape:", ports_array.shape)
+        #     print("n_levels:", n_levels)
+        #     print(ports_array)
         for level in range(n_levels):
             ## e.g., k=8, n_levels=3
             ## L0: [..., 2, <2, 2>] sum[-2, -1],
             ## L1: [..., 2, 2, <2>] sum[-1],
             ## L2: [..., 2, 2, 2]   sum[],
             sum_dims = list(range(level - n_levels + 1, 0, 1))
-            if DEBUG:
-                print(f"---------------- level {level}")
-                print(f"sum_dims", sum_dims)
+            # if DEBUG:
+            #     print(f"---------------- level {level}")
+            #     print(f"sum_dims", sum_dims)
             if len(sum_dims) > 0:
                 ports_sum = ports_array.sum(dim=sum_dims)
             else:
@@ -512,11 +512,11 @@ class DSTScheduler2(nn.Module):
                 .mul_(self.pi_shift_power / np.pi)
                 .sum(dim=sum_dims)
             )  # [#combinations]
-            print("ratio", ratios)
-            print("p", p)
+            # print("ratio", ratios)
+            # print("p", p)
             power += p
         
-        print(power)
+        # print(power)
     
         return power  # [#combinations]
 
@@ -1316,6 +1316,9 @@ class DSTScheduler2(nn.Module):
 
                 # shrink the search range to the selected range
                 search_range = selected_range
+                if DEBUG:
+                    print(f"best gain {opt}", best_gain, len(best_col_masks))
+                    print(search_range)
 
             mask["col_mask"] = best_col_masks[0]
             return mask

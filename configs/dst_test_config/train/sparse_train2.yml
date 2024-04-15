@@ -46,11 +46,11 @@ model:
     miniblock: [2, 2, 4, 4]
   linear_cfg:
     miniblock: [2, 2, 4, 4]
-  kernel_list: [16, 16]
-  kernel_size_list: [1, 1]
+  kernel_list: [16]
+  kernel_size_list: [1]
   hidden_list: []
-  stride_list: [1, 1]
-  padding_list: [1, 1]
+  stride_list: [1]
+  padding_list: [1]
   pool_out_size: 5
 
 debug:
@@ -60,7 +60,7 @@ dst_scheduler:
   death_rate: 0.5
   growth_death_ratio: 1.0
   death_rate_decay: cosine
-  death_mode: magnitude_crosstalk
+  death_mode: magnitude_power_crosstalk
   growth_mode: random
   redistribution_mode: null
   spe_initial: null
@@ -70,4 +70,4 @@ dst_scheduler:
   density: 0.8
   max_combinations: 100
   init_mode: uniform_power_crosstalk
-  power_choice_margin: 1
+  power_choice_margin: 2
