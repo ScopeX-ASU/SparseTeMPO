@@ -46,11 +46,11 @@ model:
     miniblock: [2, 2, 4, 4]
   linear_cfg:
     miniblock: [2, 2, 4, 4]
-  kernel_list: [16]
-  kernel_size_list: [1]
+  kernel_list: [16, 16, 16]
+  kernel_size_list: [1, 1, 1]
   hidden_list: []
-  stride_list: [1]
-  padding_list: [1]
+  stride_list: [1, 1, 1]
+  padding_list: [1, 1, 1]
   pool_out_size: 5
 
 debug:

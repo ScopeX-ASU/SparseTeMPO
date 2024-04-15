@@ -194,12 +194,14 @@ class DSTScheduler2(nn.Module):
         "magnitude_power",
         "magnitude_crosstalk",
         "magnitude_power_crosstalk",
+        "magnitude_crosstalk_power",
     }
     _growth_modes = {
         "random",
         "gradient",
         "gradient_power",
         "gradient_crosstalk",
+        "gradient_crosstalk_power",
         "gradient_power_crosstalk",
     }
     _pruning_types = {
@@ -678,8 +680,24 @@ class DSTScheduler2(nn.Module):
 
         return -total_crosstalk
 
+    def calc_crosstalk_scores(self, mask: Tensor) -> Tensor:
+        ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
+        ## mask: [num_combinations, array_length]
+        ## return: [num_combinations]
+        shape = mask.shape[:-1]
+        mask = mask.flatten(0, -2)
+        total_crosstalk = []
+        for m in mask:
+            total_crosstalk.append(self.calc_crosstalk_score(m))
+        return torch.tensor(total_crosstalk, device=self.device).view(shape)
+
     def calc_TIA_ADC_power(
-        self, mask_length: int, empty_rows: int, TIA_power: float, ADC_power: float
+        self,
+        mask_length: int | Tensor,
+        empty_rows: int | Tensor,
+        TIA_power: float,
+        ADC_power: float,
     ) -> float:
         return (mask_length - empty_rows) * (TIA_power + ADC_power)
 
@@ -1074,9 +1092,7 @@ class DSTScheduler2(nn.Module):
         else:
             raise ValueError("Unrecognized Pruning Type !")
 
-    def update_and_apply_mask(
-        self, pruning_type: str | None = None, indicator_list=None
-    ) -> None:
+    def update_death_mask(self, pruning_type: str | None = None) -> None:
         # update pruning and growth masks
         pruning_type = pruning_type or self.pruning_type
 
@@ -1106,8 +1122,7 @@ class DSTScheduler2(nn.Module):
             ), f"{new_mask.num_nonzeros()} must >= {self.name2nonzeros[name]}"
             self.masks[name] = new_mask  # update new mask
 
-        self.plot_mask(filename="after_death", save_fig=True)
-
+    def update_growth_mask(self, pruning_type: str | None = None) -> None:
         # update pruning mask with growing
         for name, mask in self.masks.items():
             weight = self.params[name]
@@ -1136,6 +1151,14 @@ class DSTScheduler2(nn.Module):
                     raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             self.masks[name] = new_mask
 
+    def update_and_apply_mask(
+        self, pruning_type: str | None = None, indicator_list=None
+    ) -> None:
+        # update pruning and growth masks
+        pruning_type = pruning_type or self.pruning_type
+
+        self.update_death_mask(pruning_type)
+        self.update_growth_mask(pruning_type)
         self.apply_mask()
 
     # remove part mask
@@ -1246,6 +1269,7 @@ class DSTScheduler2(nn.Module):
         mask = self.row_only_magnitude_select(
             mask=mask,
             weight=weight,
+            name=name,
             death=True,
             num_select=num_remove,
         )
@@ -1789,18 +1813,92 @@ class DSTScheduler2(nn.Module):
             )
         )
 
+    def get_total_power(self):
+        total_power = 0
+        powers = {}
+        for name, mask in self.masks.items():
+            switch_power = (
+                self.cal_ports_power(mask["col_mask"].flatten(0, -2)).sum().item()
+            )
+            TIA_ADC_power = (
+                self.calc_TIA_ADC_power(
+                    mask["row_mask"].shape[-2],
+                    (~mask["row_mask"]).sum(-2).flatten(),
+                    self.TIA_power,
+                    self.ADC_power,
+                )
+                .sum()
+                .item()
+            )
+            HDAC_power = (
+                self.calc_HDAC_power(
+                    mask["col_mask"].shape[-1],
+                    (~mask["col_mask"]).sum(-1).flatten(),
+                    self.HDAC_power,
+                )
+                .sum()
+                .item()
+            )
+            powers[name] = {
+                "switch_power": switch_power,
+                "TIA_ADC_power": TIA_ADC_power,
+                "HDAC_power": HDAC_power,
+            }
+            total_power += switch_power + TIA_ADC_power + HDAC_power
+
+        return total_power, powers
+
+    def get_total_crosstalk(self):
+        total_crosstalk = 0
+        crosstalks = {}
+        for name, mask in self.masks.items():
+
+            crosstalk = (
+                self.calc_crosstalk_scores(mask["col_mask"]).sum().item()
+                + self.calc_crosstalk_scores(mask["row_mask"][..., 0]).sum().item()
+            )
+            crosstalks[name] = crosstalk
+            total_crosstalk += crosstalk
+
+        return total_crosstalk, crosstalks
+
     def plot_mask(self, filename: str, save_fig=False):
         num_masks = len(self.masks)
-        fig, axes = plt.subplots(1, num_masks, figsize=(10, 10))
+        fig, axes = plt.subplots(3, num_masks, figsize=(4*num_masks, 10))
         if num_masks == 1:
-            axes = [axes]
+            axes = [[ax] for ax in axes]
+        total_power, powers = self.get_total_power()
+        total_crosstalk, crosstalks = self.get_total_crosstalk()
         for i, (name, mask) in enumerate(self.masks.items()):
             mask = mask.data.permute(0, 2, 4, 1, 3, 5).flatten(0, 2).flatten(1)
-            axes[i].imshow(mask.data.cpu().numpy(), cmap="gray")
-            axes[i].set_title(name)
+            axes[0][i].imshow(mask.data.cpu().numpy(), cmap="gray")
+            axes[0][i].set_title(
+                name
+                + " Mask"
+                + f"\nTotal Power {total_power:.2f}, Total Crosstalk {total_crosstalk:.2f}"
+            )
+
+            weight = (
+                self.params[name]
+                .data.permute(0, 2, 4, 1, 3, 5)
+                .flatten(0, 2)
+                .flatten(1)
+            )
+            axes[1][i].imshow(weight.data.abs().cpu().numpy(), cmap="gray")
+            axes[1][i].set_title(name + " abs(Weight)")
+
+            grad = (
+                self.params[name]
+                .grad.permute(0, 2, 4, 1, 3, 5)
+                .flatten(0, 2)
+                .flatten(1)
+            )
+            axes[2][i].imshow(grad.data.abs().cpu().numpy(), cmap="gray")
+            axes[2][i].set_title(name + " abs(Grad)")
+
         if save_fig:
             ensure_dir("./unitest/figs")
-            plt.savefig(f"./unitest/figs/{filename}.png")
+            plt.savefig(f"./unitest/figs/{filename}.png", dpi=300)
 
     def update_fired_masks(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:

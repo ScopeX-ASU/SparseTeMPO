@@ -1,16 +1,16 @@
 dataset:
-  name: fmnist
-  root: "/home/dataset/fashion-mnist"
+  name: cifar10
+  root: "/home/dataset/cifar10"
   train_valid_split_ratio: [0.9, 0.1]
   train_valid_split_seed: 1
   resize_mode: bicubic
-  center_crop: 28
+  center_crop: 32
   n_test_samples: null
   n_valid_samples: null
   num_workers: 2
-  img_height: 28
-  img_width: 28
-  in_channels: 1
+  img_height: 32
+  img_width: 32
+  in_channels: 3
   num_classes: 10
   transform: augmented
   shuffle: 1
