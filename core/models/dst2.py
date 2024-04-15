@@ -1158,13 +1158,32 @@ class DSTScheduler2(object):
 
             ## till this point, we know self.death_opts might contain power or crosstalk optimization
 
-            ## we perform coordinate descent to find the best combination in each optimization metrics
-            # dimension 1, the first opt
+            ## we perform coordinate ascent to find the best combination in each optimization metrics
             best_gain = float("-inf")
             search_range = list(
                 combinations(torch.arange(num_col_remove_candidates), num_col_remove)
             )
             selected_range = []
+
+            def obj_fn(
+                opt: str, col_mask: Tensor, affected_mask_indices: Tuple
+            ) -> float:
+                ## affected_mask_indices: [(p, q, c), (p,q,c), ..., (p,q,c)]
+                if opt == "crosstalk":
+                    gain = sum(
+                        self.calc_crosstalk_score(col_mask[p, q, 0, c, 0, :])
+                        - self.calc_crosstalk_score(mask["col_mask"][p, q, 0, c, 0, :])
+                        for (p, q, c) in affected_mask_indices
+                    )
+                elif opt == "power":
+                    ps, qs, cs = zip(affected_mask_indices)
+                    gain = self.cal_ports_power(
+                        mask["col_mask"][ps, qs, 0, cs, 0, :]
+                    ) - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :])
+                else:
+                    raise NotImplementedError
+                return gain  # higher the better
+
             for opt in self.death_opts:  # search for each optimization metric
                 if len(search_range) == 1:
                     break  # only solution left, no need to search
@@ -1195,52 +1214,12 @@ class DSTScheduler2(object):
                                 selected_col_indices[3][col_id].item(),  # c
                             )
                         )
-                    if opt == "crosstalk":
-                        gain = sum(
-                            self.calc_crosstalk_score(
-                                col_mask[
-                                    mask_indices[0],
-                                    mask_indices[1],
-                                    0,
-                                    mask_indices[2],
-                                    0,
-                                    :,  # k2
-                                ]
-                            )
-                            - self.calc_crosstalk_score(
-                                mask["col_mask"][
-                                    mask_indices[0],
-                                    mask_indices[1],
-                                    0,
-                                    mask_indices[2],
-                                    0,
-                                    :,  # k2
-                                ]
-                            )
-                            for mask_indices in affected_mask_indices
-                        )
-                    elif opt == "power":
-                        gain = self.cal_ports_power(
-                            mask["col_mask"][
-                                affected_mask_indices[0],
-                                affected_mask_indices[1],
-                                0,
-                                affected_mask_indices[2],
-                                0,
-                                :,  # k2
-                            ]
-                        ) - self.cal_ports_power(
-                            col_mask[
-                                affected_mask_indices[0],
-                                affected_mask_indices[1],
-                                0,
-                                affected_mask_indices[2],
-                                0,
-                                :,  # k2
-                            ]
-                        )
-                    else:
-                        raise NotImplementedError
+                    affected_mask_indices = tuple(affected_mask_indices)
+                    gain = obj_fn(
+                        opt=opt,
+                        col_mask=col_mask,
+                        affected_mask_indices=affected_mask_indices,
+                    )
 
                     if gain > best_gain:
                         best_gain = gain
@@ -1250,9 +1229,8 @@ class DSTScheduler2(object):
                         best_col_masks.append(col_mask)
                         selected_range.append(indices)
 
-                search_range = (
-                    selected_range  # shrink the search range to the selected range
-                )
+                # shrink the search range to the selected range
+                search_range = selected_range
 
             mask["col_mask"] = best_col_masks[0]
             return mask
