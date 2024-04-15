@@ -1,7 +1,7 @@
 '''
 Date: 2024-04-14 17:40:57
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-04-14 18:11:26
+LastEditTime: 2024-04-14 23:09:31
 FilePath: /SparseTeMPO/unitest/test_col_only_magnitude_death.py
 '''
 
@@ -35,6 +35,7 @@ def test_DST_scheduler():
     dst_scheduler.set_magnitude_based_flag(False)
     dst_scheduler.set_gradient_based_flag(False)
     print(dst_scheduler)
+    dst_scheduler.apply_mask()
     x = torch.randn(1, 1, 8, 8, device=device)
     y = model(x)
     y.mean().backward()
@@ -47,7 +48,9 @@ def test_DST_scheduler():
     #     new_mask = dst_scheduler.row_only_magnitude_death(mask, weight, name)
     #     print(new_mask["row_mask"])
     #     break
+    dst_scheduler.plot_mask(filename="before_mask", save_fig=True)
     dst_scheduler.update_and_apply_mask()
+    dst_scheduler.plot_mask(filename="after_mask", save_fig=True)
         
 
 test_DST_scheduler()

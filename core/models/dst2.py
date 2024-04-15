@@ -10,12 +10,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-from pyutils.general import logger
+from pyutils.general import logger, ensure_dir
 from torch import Tensor, nn
+import matplotlib.pyplot as plt
 
 __all__ = ["DSTScheduler2", "CosineDecay", "LinearDecay"]
 
-DEBUG = True
+DEBUG = False
 
 
 class CosineDecay(object):
@@ -533,7 +534,10 @@ class DSTScheduler2(nn.Module):
 
         # Generate all possible positions for zeros in the array
         patterns = []
-        for i, zero_indices in enumerate(combinations(range(array_length), num_zeros)):
+        ## [::-1] means prefer pruning right/bottom side, which are paddings.
+        for i, zero_indices in enumerate(
+            combinations(range(array_length)[::-1], num_zeros)
+        ):
             if i >= self.max_combinations:
                 break
             array = torch.ones(array_length, dtype=torch.bool, device=self.device)
@@ -1052,10 +1056,16 @@ class DSTScheduler2(nn.Module):
         else:
             raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
 
-    def gather_statistics(self, pruning_type="unstructure"):
-        if pruning_type in {"unstructure", "structure"}:
+    def gather_statistics(self, pruning_type: str | None = None) -> None:
+        pruning_type = pruning_type or self.pruning_type
+        if pruning_type in {
+            "unstructure",
+            "structure_row",
+            "structure_col",
+            "structure_row_col",
+        }:
             self.name2nonzeros = {
-                name: mask.sum().item() for name, mask in self.masks.items()
+                name: mask.num_nonzeros() for name, mask in self.masks.items()
             }
             self.name2zeros = {
                 name: mask.numel() - self.name2nonzeros[name]
@@ -1090,10 +1100,13 @@ class DSTScheduler2(nn.Module):
             elif self.death_mode == "threshold":
                 new_mask = self.threshold_death(mask, weight, name)
 
-            self.pruned_number[name] = int(
-                self.name2nonzeros[name] - new_mask.sum().item()
-            )
+            self.pruned_number[name] = int(new_mask.num_zeros() - self.name2zeros[name])
+            assert (
+                self.pruned_number[name] >= 0
+            ), f"{new_mask.num_nonzeros()} must >= {self.name2nonzeros[name]}"
             self.masks[name] = new_mask  # update new mask
+
+        self.plot_mask(filename="after_death", save_fig=True)
 
         # update pruning mask with growing
         for name, mask in self.masks.items():
@@ -1198,7 +1211,7 @@ class DSTScheduler2(nn.Module):
         self, mask: MultiMask, weight: Tensor, name: str
     ) -> MultiMask:
         # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
-        if mask.num_nonzeros() == mask.numel():
+        if mask["col_mask"].sum().item() == 0:
             return mask
 
         death_rate = self.name2death_rate[name]
@@ -1334,17 +1347,16 @@ class DSTScheduler2(nn.Module):
     ) -> MultiMask:
         if total_regrowth == 0:
             return new_mask
+
         grad = self.get_gradient_for_weights(weight)
         grad = grad * (~new_mask)
-        p, q, r, c, k1, k2 = weight.shape
-        num_col_revive = int(round(total_regrowth / (r * k1)))
 
         new_mask = self.col_only_magnitude_select(
             mask=new_mask,
             weight=grad,
             name=name,
             death=False,
-            num_select=num_col_revive,
+            num_select=total_regrowth,
         )
 
         return new_mask
@@ -1358,14 +1370,12 @@ class DSTScheduler2(nn.Module):
         grad = grad * (~new_mask)
         p, q, r, c, k1, k2 = weight.shape
 
-        num_row_revive = int(round(total_regrowth / (c * k2)))
-
         new_mask = self.row_only_magnitude_select(
             mask=new_mask,
             weight=grad,
             name=name,
             death=False,
-            num_select=num_row_revive,
+            num_select=total_regrowth,
         )
 
         return new_mask
@@ -1383,12 +1393,27 @@ class DSTScheduler2(nn.Module):
         p, q, r, c, k1, k2 = weight.shape
         # num of rows to prune out of total p*q*r*k1 rows
         num_row_select = int(round(num_select / (c * k2)))
+        if num_row_select == 0:
+            return mask
         opts = self.death_opts if death else self.growth_opts
 
         if self.group == "layer":  # sort row magnitude per layer
             # [p, q, r, k1]
             # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
-            row_magnitude = weight.data.norm(p=2, dim=(3, 5)).flatten()  # [p*q*r*k1]
+            row_magnitude = weight.data.norm(
+                p=2, dim=(3, 5), keepdim=True
+            )  # [p, q, r, 1, k1, 1]
+            ## to make sure pruned magnitude is always smaller than unpruned vectors (which can also have 0 magnitude)
+            ## we set pruned magnitude to -1
+            if death:
+                ## to make sure the pruned weight always have smaller magnitude than unpruned one (which can also have 0 magnitude)
+                ## we set pruned weight magnitude to -1
+                row_magnitude[~mask["row_mask"]] = -1
+            else:
+                ## to make sure the pruned grad always have larger magnitude than unpruned one (which can also have 0 magnitude)
+                ## we set unpruned grad magnitude to -1
+                row_magnitude[mask["row_mask"]] = -1
+            row_magnitude = row_magnitude.flatten()  # [p*q*r*k1]
             # index in dim p, index in dim q, index in dim r, index in dim k1
             if death:
                 num_to_select_rows = mask["row_mask"].sum().item()
@@ -1419,8 +1444,8 @@ class DSTScheduler2(nn.Module):
                 print(mask["row_mask"].shape)
 
             # only magnitude sorting, no power or crosstalk optimization
-            if len(opts) == 0:
-                mask["row_mask"][selected_row_indices] = 0
+            if len(opts) == 0 or num_row_select_candidates == num_row_select:
+                mask["row_mask"][selected_row_indices] = 0 if death else 1
                 return mask
 
             ## till this point, we know self.death_opts = ["crosstalk"]
@@ -1534,12 +1559,27 @@ class DSTScheduler2(nn.Module):
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
         num_col_select = int(round(num_select / (r * k1)))  # num of col p*q*c*k2
+        if num_col_select == 0:
+            return mask
+
         opts = self.death_opts if death else self.growth_opts
 
         if self.group == "layer":  # sort col magnitude per layer
             # [p, q, r, k1]
             # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
-            col_magnitude = weight.data.norm(p=2, dim=(2, 4)).flatten()  # [p*q*c*k2]
+            col_magnitude = weight.data.norm(
+                p=2, dim=(2, 4), keepdim=True
+            )  # [p, q, 1, c, 1, k2]
+
+            if death:
+                ## to make sure the pruned weight always have smaller magnitude than unpruned one (which can also have 0 magnitude)
+                ## we set pruned weight magnitude to -1
+                col_magnitude[~mask["col_mask"]] = -1
+            else:
+                ## to make sure the pruned grad always have larger magnitude than unpruned one (which can also have 0 magnitude)
+                ## we set unpruned grad magnitude to -1
+                col_magnitude[mask["col_mask"]] = -1
+            col_magnitude = col_magnitude.flatten()  # [p*q*c*k2]
             # index in dim p, index in dim q, index in dim r, index in dim k1
             if death:
                 num_to_select_cols = mask["col_mask"].sum().item()
@@ -1560,8 +1600,8 @@ class DSTScheduler2(nn.Module):
             )  # tuple of indices in each dimension of row_mask
 
             # only magnitude sorting, no power or crosstalk optimization
-            if len(opts) == 0 or margin == 0:
-                mask["col_mask"][selected_col_indices] = 0
+            if len(opts) == 0 or num_col_select_candidates == num_col_select:
+                mask["col_mask"][selected_col_indices] = 0 if death else 1
                 return mask
 
             ## till this point, we know self.death_opts might contain power or crosstalk optimization
@@ -1571,7 +1611,6 @@ class DSTScheduler2(nn.Module):
             search_range = list(
                 combinations(range(num_col_select_candidates), num_col_select)
             )
-            selected_range = []
 
             def obj_fn(
                 opt: str, col_mask: Tensor, affected_mask_indices: Tuple
@@ -1601,10 +1640,11 @@ class DSTScheduler2(nn.Module):
                 if len(search_range) == 1:
                     break  # only solution left, no need to search
                 best_gain = float("-inf")
+                selected_range = []
                 best_col_masks = []  # can have multiple best solutions
-                for i, indices in enumerate(
-                    search_range
-                ):  # search in the current search range
+
+                # search in the current search range
+                for i, indices in enumerate(search_range):
                     if i >= self.max_combinations:
                         break
                     indices = torch.tensor(indices)
@@ -1648,13 +1688,19 @@ class DSTScheduler2(nn.Module):
                         print(f"selected col indices", selected_col_indices_cand)
                         print(f"gain", gain)
                         print(f"best gain", best_gain)
+                        print(f"best col masks", len(best_col_masks))
 
                 # shrink the search range to the selected range
                 search_range = selected_range
                 if DEBUG:
                     print(f"best gain {opt}", best_gain, len(best_col_masks))
-                    print(search_range)
-
+                    print(f"search_range", search_range)
+            if DEBUG:
+                print(
+                    f"best col masks final",
+                    len(best_col_masks),
+                    type(best_col_masks[0]),
+                )
             mask["col_mask"] = best_col_masks[0]
             return mask
         elif self.group == "block":
@@ -1742,6 +1788,19 @@ class DSTScheduler2(nn.Module):
                 att_sparse_size / att_total_size,
             )
         )
+
+    def plot_mask(self, filename: str, save_fig=False):
+        num_masks = len(self.masks)
+        fig, axes = plt.subplots(1, num_masks, figsize=(10, 10))
+        if num_masks == 1:
+            axes = [axes]
+        for i, (name, mask) in enumerate(self.masks.items()):
+            mask = mask.data.permute(0, 2, 4, 1, 3, 5).flatten(0, 2).flatten(1)
+            axes[i].imshow(mask.data.cpu().numpy(), cmap="gray")
+            axes[i].set_title(name)
+        if save_fig:
+            ensure_dir("./unitest/figs")
+            plt.savefig(f"./unitest/figs/{filename}.png")
 
     def update_fired_masks(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:
