@@ -13,7 +13,7 @@ import torch.optim as optim
 from pyutils.general import logger
 from torch import Tensor, nn
 
-__all__ = ["DSTScheduler", "CosineDecay", "LinearDecay"]
+__all__ = ["DSTScheduler2", "CosineDecay", "LinearDecay"]
 
 
 class CosineDecay(object):
@@ -98,6 +98,9 @@ class MultiMask(object):
     def __getitem__(self, key):
         return self._masks[key]
 
+    def __setitem__(self, key, value):
+        self._masks[key] = value
+
     @property
     def data(self):
         out = 1
@@ -124,25 +127,61 @@ class MultiMask(object):
         return self.data.sum()
 
     def __mul__(self, other):
+        if isinstance(other, MultiMask):
+            new_mask = self.clone()
+            new_mask._masks = {
+                name: mask * other[name] for name, mask in new_mask._masks.items()
+            }
+            return new_mask
         return self.data * other
 
     def __rmul__(self, other):
+        if isinstance(other, MultiMask):
+            new_mask = self.clone()
+            new_mask._masks = {
+                name: mask * other[name] for name, mask in new_mask._masks.items()
+            }
+            return new_mask
+
         return self.data * other
 
     def __eq__(self, other):
+        if isinstance(other, MultiMask):
+            return self.data == other.data
         return self.data == other
 
     def __invert__(self):
         return ~self.data
 
     def __and__(self, other):
+        if isinstance(other, MultiMask):
+            new_mask = self.clone()
+            new_mask._masks = {
+                name: mask & other[name] for name, mask in new_mask._masks.items()
+            }
+            return new_mask
         return self.data & other
 
     def __or__(self, other):
+        if isinstance(other, MultiMask):
+            new_mask = self.clone()
+            new_mask._masks = {
+                name: mask | other[name] for name, mask in new_mask._masks.items()
+            }
+            return new_mask
         return self.data | other
 
     def __xor__(self, other):
+        if isinstance(other, MultiMask):
+            new_mask = self.clone()
+            new_mask._masks = {
+                name: mask ^ other[name] for name, mask in new_mask._masks.items()
+            }
+            return new_mask
         return self.data ^ other
+
+    def clone(self):
+        return copy.deepcopy(self)
 
 
 class DSTScheduler2(object):
@@ -202,12 +241,15 @@ class DSTScheduler2(object):
             raise ValueError(
                 f"pruning_type expects {self._pruning_types}, but got {pruning_type}."
             )
+        self.pruning_type = pruning_type
+
         self.growth_death_ratio = growth_death_ratio
         if growth_mode not in self._growth_modes:
             raise ValueError(
                 f"Growth mode expects {self._growth_modes}, but got {growth_mode}."
             )
 
+        self.growth_mode = growth_mode  # gradient
         opt = [m for m in self.growth_mode.split("_")[1:]]
         if self.pruning_type == "structure_row":
             opt = [m for m in opt if m != "power"]
@@ -216,13 +258,10 @@ class DSTScheduler2(object):
             )
         self.growth_opts = opt
 
-        self.growth_mode = growth_mode  # gradient
         self.redistribution_mode = redistribution_mode  # momentum
         self.spe_initial = spe_initial  # initial masks made by SNIP
         self.snip_masks = None  # masks made by SNIP during training
         self.nonzeros_index = None
-
-        self.pruning_type = pruning_type
 
         self.update_frequency = update_frequency
         self.T_max = T_max
@@ -282,7 +321,7 @@ class DSTScheduler2(object):
         self,
         module,
         density: float,
-        init_mode: str = "fixed_ERK",
+        init_mode: str = "uniform",
         mask_path=None,
         pruning_type: str | None = None,
     ):
@@ -599,7 +638,7 @@ class DSTScheduler2(object):
         # calc distances between consecutive active elements
         dist = (active_indices[None, ...] - active_indices[..., None]).abs()
         dist[torch.arange(num_active), torch.arange(num_active)] = num_active + 1
-        average_separation = dist.min(dim=1).values.mean().item()
+        average_separation = dist.amin(dim=1).float().mean().item()
         density_score = torch.std(active_indices.float()).item()
 
         composite_score = average_separation + density_score
@@ -903,7 +942,7 @@ class DSTScheduler2(object):
             "uniform_power_crosstalk",
             "uniform_crosstalk",
             "uniform_crosstalk_power",
-        }
+        }, f"Unrecognized Init Mode {mode}"
         opts = mode.split("_")[1:]
         if self.pruning_type == "structure_row":
             opts = [m for m in opts if m != "power"]
@@ -913,11 +952,16 @@ class DSTScheduler2(object):
                 f"{self.pruning_type} not support power, init mode reduced to {opts}"
             )
 
-        if mode == "fixed_ERK":
+        if mode == "fixedERK":
             raise NotImplementedError
-        elif mode == "random":
+        elif mode == "uniform":
             self._structure_init_random(density)
-        elif mode in {"power", "crosstalk", "power_crosstalk", "crosstalk_power"}:
+        elif mode in {
+            "uniform_power",
+            "uniform_power_crosstalk",
+            "uniform_crosstalk",
+            "uniform_crosstalk_power",
+        }:
             self._structure_init_power_crosstalk(density, opts)
         else:
             raise ValueError(f"Unrecognized Init Mode {mode}")
@@ -955,6 +999,7 @@ class DSTScheduler2(object):
 
     # multiple mask for paramenters and momentum in optimizers
     def apply_mask(self, pruning_type: str | None = None) -> None:
+        pruning_type = pruning_type or self.pruning_type
         if pruning_type in {
             "unstructure",
             "structure_row",
@@ -969,7 +1014,7 @@ class DSTScheduler2(object):
                 if "momentum_buffer" in state:
                     state["momentum_buffer"] *= mask
         else:
-            raise ValueError("Unrecognized Pruning Type !")
+            raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
 
     def gather_statistics(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:
@@ -1161,7 +1206,7 @@ class DSTScheduler2(object):
             ## we perform coordinate ascent to find the best combination in each optimization metrics
             best_gain = float("-inf")
             search_range = list(
-                combinations(torch.arange(num_col_remove_candidates), num_col_remove)
+                combinations(range(num_col_remove_candidates), num_col_remove)
             )
             selected_range = []
 
@@ -1194,6 +1239,7 @@ class DSTScheduler2(object):
                 ):  # search in the current search range
                     if i >= self.max_combinations:
                         break
+                    indices = torch.tensor(indices)
                     selected_col_indices = tuple(
                         col_index[indices] for col_index in selected_col_indices
                     )
@@ -1250,13 +1296,14 @@ class DSTScheduler2(object):
 
         death_rate = self.name2death_rate[name]
         num_remove = math.ceil(death_rate * self.name2nonzeros[name])
+
         if num_remove == 0.0:
             return mask
 
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
-        num_row_remove = num_remove / (
-            c * k2
+        num_row_remove = int(
+            round(num_remove / (c * k2))
         )  # num of rows to prune out of total p*q*r*k1 rows
 
         if self.group == "layer":  # sort row magnitude per layer
@@ -1286,10 +1333,12 @@ class DSTScheduler2(object):
             best_crosstalk_gain = float("-inf")
             best_row_mask = None
             for i, indices in enumerate(
-                combinations(torch.arange(num_row_remove_candidates), num_row_remove)
+                combinations(range(num_row_remove_candidates), num_row_remove)
             ):
                 if i >= self.max_combinations:
                     break
+
+                indices = torch.tensor(indices)
                 selected_row_indices = tuple(
                     row_index[indices] for row_index in selected_row_indices
                 )
@@ -1403,9 +1452,17 @@ class DSTScheduler2(object):
             return new_mask
         expected_growth_probability = total_regrowth / n
         if self.pruning_type == "unstructure":
-            new_weights = new_mask.new_zeros().bernoulli_(p=expected_growth_probability)
-        elif self.pruning_type == "structure":
-            raise NotImplementedError
+            new_weights = new_mask.clone()
+            new_weights["elem_mask"].bernoulli_(p=expected_growth_probability)
+        elif self.pruning_type in {
+            "structure",
+            "structure_row",
+            "structure_col",
+            "structure_row_col",
+        }:
+            new_weights = new_mask.clone()
+            new_weights["row_mask"].bernoulli_(p=expected_growth_probability)
+            new_weights["col_mask"].bernoulli_(p=expected_growth_probability)
         else:
             raise ValueError("Unrecognized Pruning Type !")
 
@@ -1422,7 +1479,7 @@ class DSTScheduler2(object):
         elif self.pruning_type == "structure":
             raise NotImplementedError
         else:
-            raise ValueError("Unrecognized Pruning Type !")
+            raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
         return new_mask
 
     def col_only_gradient_growth(self, name, new_mask, total_regrowth, weight):

@@ -1,3 +1,9 @@
+'''
+Date: 2024-04-14 17:40:57
+LastEditors: Jiaqi Gu && jiaqigu@asu.edu
+LastEditTime: 2024-04-14 17:49:21
+FilePath: /SparseTeMPO/unitest/test_col_only_magnitude_death.py
+'''
 
 import torch
 from core.models.layers.tempo_linear import TeMPOBlockLinear
@@ -10,7 +16,7 @@ from core.utils import get_parameter_group, register_hidden_hooks
 
 def test_DST_scheduler():
     device = "cuda:0"
-    configs.load("./configs/dst_test_config/train/sparse_train.yml", recursive=True)
+    configs.load("./configs/dst_test_config/train/sparse_train2.yml", recursive=True)
     model = builder.make_model(
         device,
         model_cfg=configs.model,
@@ -40,7 +46,7 @@ def test_DST_scheduler():
     #     new_mask = dst_scheduler.row_only_magnitude_death(mask, weight, name)
     #     print(new_mask["row_mask"])
     #     break
-    dst_scheduler.update_and_apply_mask("structure", None)
+    dst_scheduler.update_and_apply_mask()
         
 
 test_DST_scheduler()
