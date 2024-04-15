@@ -477,24 +477,34 @@ class DSTScheduler2(nn.Module):
         n_levels = int(np.log2(ports_array.shape[1]))
         ports_array = ports_array.view([-1] + [2] * n_levels)
         power = 0
+        if DEBUG:
+            print("ports_array shape:", ports_array.shape)
+            print("n_levels:", n_levels)
         for level in range(n_levels):
             ## e.g., k=8, n_levels=3
             ## L0: [..., 2, <2, 2>] sum[-2, -1],
             ## L1: [..., 2, 2, <2>] sum[-1],
             ## L2: [..., 2, 2, 2]   sum[],
             sum_dims = list(range(level - n_levels + 1, 0, 1))
-            ports_sum = ports_array.sum(dim=sum_dims)
+            if DEBUG:
+                print(f"sum_dims", sum_dims)
+            if len(sum_dims) > 0:
+                ports_sum = ports_array.sum(dim=sum_dims)
+            else:
+                ports_sum = ports_array
 
-            ratios = ports_sum[..., 0:1] / ports_sum[..., 1:2]
+            ratios = ports_sum[..., 0:1] / ports_sum.sum(-1, keepdim=True)
 
             ## L0: [..., <2>]       sum[-1],
             ## L1: [..., <2, 2>]    sum[-2, -1],
             ## L2: [..., <2, 2, 2>] sum[-3, -2, -1],
             sum_dims = list(range(-1 - level, 0, 1))
+            ## cos^2((delta_phi + pi/2)/2) = ratio
+            ## |delta_phi| = |arccos(sqrt(ratio)) * 2 - pi/2|
             power += (
                 ratios.sqrt_()
-                .arccos()
-                .mul_(2 / np.pi * self.pi_shift_power)
+                .acos().mul_(2).sub_(np.pi/2).abs_()
+                .mul_(self.pi_shift_power / np.pi)
                 .sum(dim=sum_dims)
             )  # [#combinations]
         return power  # [#combinations]
@@ -620,11 +630,14 @@ class DSTScheduler2(nn.Module):
         ## masks: [#combinations, array_length]
         ## best_patterns [#num, array_length], best_score: float
         if masks.shape[0] == 1:
-            return masks[0]
+            return masks
         scores = []
         for mask in masks:
             score = self.calc_crosstalk_score(mask)
             scores.append(score)
+        if DEBUG:
+            print(masks.shape, masks)
+            print("crosstalk_scores:", scores)
         scores = torch.tensor(scores)
         max_score = scores.max().item()
         return masks[scores == max_score], max_score
@@ -844,6 +857,8 @@ class DSTScheduler2(nn.Module):
         self, patterns: Tensor
     ) -> Tuple[Tensor, float]:
         powers = self.cal_ports_power(patterns)  # [#combinations]
+        if DEBUG:
+            print(f"calc power", powers.shape, powers)
         min_power_patterns, min_power = self.find_minimal_power_pattern(
             patterns, powers
         )
@@ -872,9 +887,14 @@ class DSTScheduler2(nn.Module):
                 patterns = self.find_sparsity_patterns(
                     col_num, empty_col_num
                 )  # [#combinations, col_num]
+                if DEBUG:
+                    print(f"select {empty_col_num} from {col_num}")
+                    print("patterns", patterns.shape, patterns)
                 for opt in opts:
                     if opt == "power":
                         patterns, _ = self.find_least_switch_power_patterns(patterns)
+                        if DEBUG:
+                            print(f"after power opt", patterns.shape, patterns)
                     elif opt == "crosstalk":
                         patterns, _ = self.find_least_crosstalk_patterns(patterns)
                     else:
@@ -1178,7 +1198,7 @@ class DSTScheduler2(nn.Module):
 
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
-        num_col_remove = num_remove / (r * k1)  # num of col p*q*c*k2
+        num_col_remove = int(round(num_remove / (r * k1)))  # num of col p*q*c*k2
 
         if self.group == "layer":  # sort col magnitude per layer
             # [p, q, r, k1]

@@ -64,7 +64,7 @@ dst_scheduler:
   growth_mode: random
   redistribution_mode: null
   spe_initial: null
-  pruning_type: structure_row
+  pruning_type: structure_col
   update_frequency: 1400
   T_max: 0.8
   density: 0.8
