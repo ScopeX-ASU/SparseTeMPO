@@ -5,7 +5,6 @@ import math
 import random
 from itertools import combinations
 from typing import Callable, Dict, List, Optional, Tuple, Union
-
 from functools import lru_cache
 import numpy as np
 import torch
@@ -150,17 +149,12 @@ class DSTScheduler2(object):
     _death_modes = {
         "magnitude",
         "random",
-        "momentum",
-        "momentum_neuron",
-        "gradient",
         "magnitude_power",
         "magnitude_crosstalk",
         "magnitude_power_crosstalk",
     }
     _growth_modes = {
         "random",
-        "momentum",
-        "momentum_neuron",
         "gradient",
         "gradient_power",
         "gradient_crosstalk",
@@ -180,7 +174,7 @@ class DSTScheduler2(object):
         growth_death_ratio=1.0,
         death_rate_decay=None,
         death_mode="magnitude",
-        growth_mode="momentum",
+        growth_mode="gradient",
         redistribution_mode="momentum",
         args=None,
         spe_initial=None,
@@ -194,7 +188,7 @@ class DSTScheduler2(object):
         update_frequency: int = 100,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
-        max_power_combinations: int = 100,  # set a maximum combinations to enumerate. otherwise it might have too many combinations
+        max_combinations: int = 100,  # set a maximum combinations to enumerate. otherwise it might have too many combinations
         device="cuda:0",
     ):
         ## Dynamic Sparse Training Scheduler
@@ -204,26 +198,36 @@ class DSTScheduler2(object):
         self.modules = []
         self.optimizer = optimizer
 
+        if pruning_type not in self._pruning_types:
+            raise ValueError(
+                f"pruning_type expects {self._pruning_types}, but got {pruning_type}."
+            )
         self.growth_death_ratio = growth_death_ratio
         if growth_mode not in self._growth_modes:
             raise ValueError(
                 f"Growth mode expects {self._growth_modes}, but got {growth_mode}."
             )
+
+        opt = [m for m in self.growth_mode.split("_")[1:]]
+        if self.pruning_type == "structure_row":
+            opt = [m for m in opt if m != "power"]
+            logger.info(
+                f"structure_row does not support power optimization, growth_opts reduced to {opt}"
+            )
+        self.growth_opts = opt
+
         self.growth_mode = growth_mode  # gradient
         self.redistribution_mode = redistribution_mode  # momentum
         self.spe_initial = spe_initial  # initial masks made by SNIP
         self.snip_masks = None  # masks made by SNIP during training
         self.nonzeros_index = None
-        if pruning_type not in self._pruning_types:
-            raise ValueError(
-                f"pruning_type expects {self._pruning_types}, but got {pruning_type}."
-            )
+
         self.pruning_type = pruning_type
 
         self.update_frequency = update_frequency
         self.T_max = T_max
         self.group = group
-        self.max_power_combinations = max_power_combinations
+        self.max_combinations = max_combinations
 
         self.steps = 0
         self.device = device
@@ -239,6 +243,14 @@ class DSTScheduler2(object):
             raise ValueError(
                 f"Death mode expects {self._death_modes}, but got {death_mode}."
             )
+
+        opt = [m for m in self.death_mode.split("_")[1:]]
+        if self.pruning_type == "structure_row":
+            opt = [m for m in opt if m != "power"]
+            logger.info(
+                f"structure_row does not support power optimization, death_mode reduced to {opt}"
+            )
+        self.death_opts = opt
 
         self.death_rate = death_rate
         self.death_rate_decay = death_rate_decay
@@ -457,7 +469,7 @@ class DSTScheduler2(object):
         # Generate all possible positions for zeros in the array
         patterns = []
         for i, zero_indices in enumerate(combinations(range(array_length), num_zeros)):
-            if i >= self.max_power_combinations:
+            if i >= self.max_combinations:
                 break
             array = torch.ones(array_length, dtype=torch.bool, device=self.device)
             array[torch.tensor(zero_indices)] = 0
@@ -478,7 +490,7 @@ class DSTScheduler2(object):
         possible_patterns, _ = self.find_minimal_power_pattern(
             possible_patterns, powers
         )
-        return self.find_least_crosstalk_pattern(possible_patterns)
+        return self.find_least_crosstalk_patterns(possible_patterns)
 
     def gradient_based_col_sparsity_patterns(
         self, remain_length, num_of_zeros, fixed_index
@@ -493,7 +505,7 @@ class DSTScheduler2(object):
         possible_patterns, _ = self.find_minimal_power_pattern(
             possible_patterns, powers
         )
-        return self.find_least_crosstalk_pattern(possible_patterns)
+        return self.find_least_crosstalk_patterns(possible_patterns)
 
     def magnitude_based_row_sparsity_patterns(
         self, remain_length, num_of_zeros, fixed_index
@@ -504,7 +516,7 @@ class DSTScheduler2(object):
         possible_patterns = self.row_sparsity_patterns(remain_length, num_of_zeros)
         if fixed_index.size != 0:
             possible_patterns = np.insert(possible_patterns, fixed_index, 1, axis=1)
-        return self.find_least_crosstalk_pattern(possible_patterns)
+        return self.find_least_crosstalk_patterns(possible_patterns)
 
     def find_minimal_power_pattern(
         self, patterns: Tensor, pattern_powers: Tensor
@@ -562,7 +574,7 @@ class DSTScheduler2(object):
 
     #     return {key: value for key, value in sorted(power_dict.items())}
 
-    def find_least_crosstalk_pattern(self, masks: Tensor) -> Tuple[Tensor, float]:
+    def find_least_crosstalk_patterns(self, masks: Tensor) -> Tuple[Tensor, float]:
         ## among the possible patterns with min power, find the one with least crosstalk
         ## masks: [#combinations, array_length]
         ## best_patterns [#num, array_length], best_score: float
@@ -797,7 +809,7 @@ class DSTScheduler2(object):
         return min_power_patterns, min_power
 
     def _structure_init_power_crosstalk(
-        self, density: float = 0.05, modes: List = ["power", "crosstalk"]
+        self, density: float = 0.05, opts: List = ["power", "crosstalk"]
     ) -> None:
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
@@ -806,9 +818,9 @@ class DSTScheduler2(object):
                 patterns = self.find_sparsity_patterns(
                     row_num, empty_row_num
                 )  # [#combinations, col_num]
-                for mode in modes:
-                    if mode == "crosstalk":
-                        patterns, _ = self.find_least_crosstalk_pattern(patterns)
+                for opt in opts:
+                    if opt == "crosstalk":
+                        patterns, _ = self.find_least_crosstalk_patterns(patterns)
                 mask["row_mask"][..., :, 0] = patterns[0]
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
@@ -819,11 +831,11 @@ class DSTScheduler2(object):
                 patterns = self.find_sparsity_patterns(
                     col_num, empty_col_num
                 )  # [#combinations, col_num]
-                for mode in modes:
-                    if mode == "power":
+                for opt in opts:
+                    if opt == "power":
                         patterns, _ = self.find_least_switch_power_patterns(patterns)
-                    elif mode == "crosstalk":
-                        patterns, _ = self.find_least_crosstalk_pattern(patterns)
+                    elif opt == "crosstalk":
+                        patterns, _ = self.find_least_crosstalk_patterns(patterns)
                     else:
                         raise NotImplementedError
                 mask["col_mask"][..., :] = patterns[0]
@@ -844,8 +856,8 @@ class DSTScheduler2(object):
                     col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
                     row_patterns = self.find_sparsity_patterns(row_num, empty_row_num)
                     score = {}
-                    for mode in modes:
-                        if mode == "power":
+                    for opt in opts:
+                        if opt == "power":
                             col_patterns, switch_power = (
                                 self.find_least_switch_power_patterns(col_patterns)
                             )
@@ -858,21 +870,21 @@ class DSTScheduler2(object):
                             score["power"] = -(
                                 switch_power + TIA_ADC_power + HDAC_power
                             )
-                        elif mode == "crosstalk":
+                        elif opt == "crosstalk":
                             col_patterns, col_crosstalk = (
-                                self.find_least_crosstalk_pattern(col_patterns)
+                                self.find_least_crosstalk_patterns(col_patterns)
                             )
                             row_patterns, row_crosstalk = (
-                                self.find_least_crosstalk_pattern(row_patterns)
+                                self.find_least_crosstalk_patterns(row_patterns)
                             )
 
                             score["crosstalk"] = col_crosstalk + row_crosstalk
                         else:
                             raise NotImplementedError
 
-                    # prioritize the first mode
-                    if score[modes[0]] > best_score:
-                        best_score = score[modes[0]]
+                    # prioritize the first opt
+                    if score[opts[0]] > best_score:
+                        best_score = score[opts[0]]
                         best_row_patterns = row_patterns
                         best_col_patterns = col_patterns
 
@@ -886,19 +898,19 @@ class DSTScheduler2(object):
     ) -> None:
         assert mode in {
             "fixedERK",
-            "random",
-            "power",
-            "power_crosstalk",
-            "crosstalk",
-            "crosstalk_power",
+            "uniform",
+            "uniform_power",
+            "uniform_power_crosstalk",
+            "uniform_crosstalk",
+            "uniform_crosstalk_power",
         }
-        modes = modes.split("_")
+        opts = mode.split("_")[1:]
         if self.pruning_type == "structure_row":
-            modes = [m for m in modes if m != "power"]
-            if len(modes) == 0:
-                modes = ["random"]
+            opts = [m for m in opts if m != "power"]
+            if len(opts) == 0:
+                opts = ["uniform"]
             logger.info(
-                f"{self.pruning_type} not support power, init mode reduced to {modes}"
+                f"{self.pruning_type} not support power, init mode reduced to {opts}"
             )
 
         if mode == "fixed_ERK":
@@ -906,7 +918,7 @@ class DSTScheduler2(object):
         elif mode == "random":
             self._structure_init_random(density)
         elif mode in {"power", "crosstalk", "power_crosstalk", "crosstalk_power"}:
-            self._structure_init_power_crosstalk(density, modes)
+            self._structure_init_power_crosstalk(density, opts)
         else:
             raise ValueError(f"Unrecognized Init Mode {mode}")
 
@@ -942,8 +954,13 @@ class DSTScheduler2(object):
         logger.info(f"Param counts:\n\t{params}")
 
     # multiple mask for paramenters and momentum in optimizers
-    def apply_mask(self, pruning_type="unstructure"):
-        if pruning_type in {"unstructure", "structure"}:
+    def apply_mask(self, pruning_type: str | None = None) -> None:
+        if pruning_type in {
+            "unstructure",
+            "structure_row",
+            "structure_col",
+            "structure_row_col",
+        }:
             for name in self.masks:
                 mask = self.masks[name]
                 weight = self.params[name]
@@ -966,62 +983,67 @@ class DSTScheduler2(object):
         else:
             raise ValueError("Unrecognized Pruning Type !")
 
-    def update_and_apply_mask(self, pruning_type="unstructure", indicator_list=None):
+    def update_and_apply_mask(
+        self, pruning_type: str | None = None, indicator_list=None
+    ) -> None:
         # update pruning and growth masks
-        if pruning_type in {"unstructure", "structure"}:
-            self.gather_statistics()  # count each of module's zeros and non-zeros
-            # update pruning mask
-            for name, mask in self.masks.items():
-                weight = self.params[name]
-                if self.death_mode == "magnitude":
-                    new_mask = self.magnitude_death(mask, weight, name)
-                elif self.death_mode == "SET":
-                    new_mask = self.magnitude_and_negativity_death(mask, weight, name)
-                elif self.death_mode == "threshold":
-                    new_mask = self.threshold_death(mask, weight, name)
-                elif self.death_mode == "row_only_magnitude":
+        pruning_type = pruning_type or self.pruning_type
+
+        self.gather_statistics()  # count each of module's zeros and non-zeros
+        # update pruning mask
+        for name, mask in self.masks.items():
+            weight = self.params[name]
+            if self.death_mode == "magnitude" and pruning_type == "unstructure":
+                new_mask = self.magnitude_death(mask, weight, name)
+            elif self.death_mode.startswith("magnitude"):
+                if pruning_type == "structure_row":
                     new_mask = self.row_only_magnitude_death(mask, weight, name)
-                elif self.death_mode == "col_only_magnitude":
+                elif pruning_type == "structure_col":
                     new_mask = self.col_only_magnitude_death(mask, weight, name)
-                elif self.death_mode == "row_col_magnitude":
+                elif pruning_type == "structure_row_col":
                     new_mask = self.row_col_magnitude_death(mask, weight, name)
-                self.pruned_number[name] = int(
-                    self.name2nonzeros[name] - new_mask.sum().item()
+                else:
+                    raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
+            elif self.death_mode == "SET":
+                new_mask = self.magnitude_and_negativity_death(mask, weight, name)
+            elif self.death_mode == "threshold":
+                new_mask = self.threshold_death(mask, weight, name)
+
+            self.pruned_number[name] = int(
+                self.name2nonzeros[name] - new_mask.sum().item()
+            )
+            self.masks[name] = new_mask  # update new mask
+
+        # update pruning mask with growing
+        for name, mask in self.masks.items():
+            weight = self.params[name]
+            if self.growth_mode == "random":
+                new_mask = self.random_growth(
+                    name, mask, self.pruned_number[name], weight
                 )
-                self.masks[name] = new_mask  # update new mask
+            elif self.growth_mode == "momentum":
+                new_mask = self.momentum_growth(
+                    name, mask, self.pruned_number[name], weight
+                )
+            elif self.growth_mode == "gradient":
+                new_mask = self.gradient_growth(
+                    name, mask, self.pruned_number[name], weight
+                )
+            elif self.growth_mode == "row_only_gradient":
+                new_mask = self.row_only_gradient_growth(
+                    name, mask, self.pruned_number[name], weight
+                )
+            elif self.growth_mode == "col_only_gradient":
+                new_mask = self.col_only_gradient_growth(
+                    name, mask, self.pruned_number[name], weight
+                )
+            elif self.growth_mode == "row_col_gradient":
+                new_mask = self.row_col_gradient_growth(
+                    name, mask, self.pruned_number[name], weight
+                )
+            self.masks[name] = new_mask
 
-            # update pruning mask with growing
-            for name, mask in self.masks.items():
-                weight = self.params[name]
-                if self.growth_mode == "random":
-                    new_mask = self.random_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                elif self.growth_mode == "momentum":
-                    new_mask = self.momentum_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                elif self.growth_mode == "gradient":
-                    new_mask = self.gradient_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                elif self.growth_mode == "row_only_gradient":
-                    new_mask = self.row_only_gradient_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                elif self.growth_mode == "col_only_gradient":
-                    new_mask = self.col_only_gradient_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                elif self.growth_mode == "row_col_gradient":
-                    new_mask = self.row_col_gradient_growth(
-                        name, mask, self.pruned_number[name], weight
-                    )
-                self.masks[name] = new_mask
-
-            self.apply_mask()
-        else:
-            raise ValueError("Unrecognized Pruning Type !")
+        self.apply_mask()
 
     # remove part mask
     def remove_weight_partial_name(self, partial_name):
@@ -1092,14 +1114,14 @@ class DSTScheduler2(object):
     def threshold_death(self, mask, weight, name):
         return torch.abs(weight.data) > self.threshold
 
-    def col_only_magnitude_death(self, mask, weight, name):
-
+    def col_only_magnitude_death(
+        self, mask: MultiMask, weight: Tensor, name: str
+    ) -> MultiMask:
         # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
         if mask.num_nonzeros() == mask.numel():
             return mask
 
         death_rate = self.name2death_rate[name]
-
         num_remove = math.ceil(death_rate * self.name2nonzeros[name])
 
         if num_remove == 0.0:
@@ -1110,70 +1132,136 @@ class DSTScheduler2(object):
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
         num_col_remove = num_remove / (r * k1)  # num of col p*q*c*k2
-        num_col_empty = (
-            mask["col_mask"].sum().item() - mask["col_mask"].numel()
-        )  # get col num from mask
-        # [p, q, c, k2]
-        col_magnitude = np.linalg.norm(weight.cpu().data, ord=2, axis=(2, 4))
-        col_magnitude = col_magnitude.reshape(-1)
 
-        # sort the col magnitude
-        x = np.sort(col_magnitude)
-        sorted_indices = np.argsort(col_magnitude)
-        # print(sorted_indices)
-        k = math.ceil(num_col_remove + num_col_empty)
+        if self.group == "layer":  # sort col magnitude per layer
+            # [p, q, r, k1]
+            # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
+            col_magnitude = weight.data.norm(p=2, dim=(2, 4)).flatten()  # [p*q*c*k2]
+            # index in dim p, index in dim q, index in dim r, index in dim k1
+            num_nonzero_cols = mask["col_mask"].sum().item()
+            margin = 0 if len(self.death_opts) == 0 else self.power_choice_margin
+            num_col_remove_candidates = min(num_col_remove + margin, num_nonzero_cols)
 
-        threshold = x[k - 1].item()
+            ## select a slightly larger candidates pool
+            selected_col_indices = torch.argsort(col_magnitude, descending=True)[
+                :num_col_remove_candidates
+            ]
+            ## convert from flattened indices to high-dimensional indices to match col_mask
+            selected_col_indices = torch.unravel_index(
+                selected_col_indices, mask["col_mask"].shape
+            )  # tuple of indices in each dimension of row_mask
 
-        threshold_mag_power = x[k + self.power_choice_margin - 1].item()
+            # only magnitude sorting, no power or crosstalk optimization
+            if len(self.death_opts) == 0 or margin == 0:
+                mask["col_mask"][selected_col_indices] = 0
+                return mask
 
-        new_col_mask = col_magnitude > threshold
+            ## till this point, we know self.death_opts might contain power or crosstalk optimization
 
-        col_magnitude = col_magnitude.reshape(p * q * c, k2)
-        new_col_mask = new_col_mask.reshape(p * q * c, k2)
+            ## we perform coordinate descent to find the best combination in each optimization metrics
+            # dimension 1, the first opt
+            best_gain = float("-inf")
+            search_range = list(
+                combinations(torch.arange(num_col_remove_candidates), num_col_remove)
+            )
+            selected_range = []
+            for opt in self.death_opts:  # search for each optimization metric
+                if len(search_range) == 1:
+                    break  # only solution left, no need to search
+                best_gain = float("-inf")
+                best_col_masks = []  # can have multiple best solutions
+                for i, indices in enumerate(
+                    search_range
+                ):  # search in the current search range
+                    if i >= self.max_combinations:
+                        break
+                    selected_col_indices = tuple(
+                        col_index[indices] for col_index in selected_col_indices
+                    )
+                    ## check score for this combination
+                    ## crosstalk can be calculated based on its index along k2 dimension
 
-        for i in range(col_magnitude.shape[0]):
-            if self.magnitude_based_flag:
-                current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
-                num_of_less_threshold = np.sum(
-                    (current_k2_with_mask <= threshold_mag_power)
-                    & (current_k2_with_mask > threshold)
+                    ## first try to prune cols in a cloned col_mask
+                    col_mask = mask["col_mask"].clone()
+                    col_mask[selected_col_indices] = 0
+
+                    ## after pruning, calculate gain on affected row_masks
+                    affected_mask_indices = set()  # use set to avoid duplicate indices
+                    for col_id in range(num_col_remove):
+                        affected_mask_indices.add(
+                            (
+                                selected_col_indices[0][col_id].item(),  # p
+                                selected_col_indices[1][col_id].item(),  # q
+                                selected_col_indices[3][col_id].item(),  # c
+                            )
+                        )
+                    if opt == "crosstalk":
+                        gain = sum(
+                            self.calc_crosstalk_score(
+                                col_mask[
+                                    mask_indices[0],
+                                    mask_indices[1],
+                                    0,
+                                    mask_indices[2],
+                                    0,
+                                    :,  # k2
+                                ]
+                            )
+                            - self.calc_crosstalk_score(
+                                mask["col_mask"][
+                                    mask_indices[0],
+                                    mask_indices[1],
+                                    0,
+                                    mask_indices[2],
+                                    0,
+                                    :,  # k2
+                                ]
+                            )
+                            for mask_indices in affected_mask_indices
+                        )
+                    elif opt == "power":
+                        gain = self.cal_ports_power(
+                            mask["col_mask"][
+                                affected_mask_indices[0],
+                                affected_mask_indices[1],
+                                0,
+                                affected_mask_indices[2],
+                                0,
+                                :,  # k2
+                            ]
+                        ) - self.cal_ports_power(
+                            col_mask[
+                                affected_mask_indices[0],
+                                affected_mask_indices[1],
+                                0,
+                                affected_mask_indices[2],
+                                0,
+                                :,  # k2
+                            ]
+                        )
+                    else:
+                        raise NotImplementedError
+
+                    if gain > best_gain:
+                        best_gain = gain
+                        best_col_masks = [col_mask]
+                        selected_range = [indices]
+                    elif gain == best_gain:
+                        best_col_masks.append(col_mask)
+                        selected_range.append(indices)
+
+                search_range = (
+                    selected_range  # shrink the search range to the selected range
                 )
-                if num_of_less_threshold != 0:
-                    fixed_indices = np.sort(
-                        np.where(col_magnitude[i] > threshold_mag_power)
-                    )
-                    num_of_zeros = np.sum(new_col_mask[i] == False)
-                    new_col_mask[i] = self.magnitude_based_col_sparsity_patterns(
-                        num_of_less_threshold + num_of_zeros,
-                        num_of_zeros,
-                        fixed_indices,
-                    )
-            else:
-                num_of_ones = np.sum(new_col_mask[i] == True)
-                num_of_zeros = np.sum(new_col_mask[i] == False)
-                if num_of_ones <= self.power_choice_margin:
-                    possible_patterns = self.col_sparsity_patterns(k2, num_of_zeros)
-                    powers = self.cal_ports_power(possible_patterns)
-                    possible_patterns, _ = self.find_minimal_power_pattern(
-                        possible_patterns, powers
-                    )
-                    new_col_mask[i] = self.find_least_crosstalk_pattern(
-                        possible_patterns
-                    )
-                else:
-                    current_k2_with_mask = col_magnitude[i] * new_col_mask[i]
-                    sorted_indices_loop = np.argsort(current_k2_with_mask)
-                    fixed_indices = np.sort(
-                        sorted_indices_loop[num_of_zeros + self.power_choice_margin :]
-                    )
-                    new_col_mask[i] = self.magnitude_based_col_sparsity_patterns(
-                        k2 - fixed_indices.shape[0], num_of_zeros, fixed_indices
-                    )
-        mask["col_mask"][...] = torch.tensor(
-            new_col_mask.reshape(p, q, 1, c, 1, k2), device=self.device
-        )
-        return mask
+
+            mask["col_mask"] = best_col_masks[0]
+            return mask
+        elif self.group == "block":
+            ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
+            ## through this will limit accuracy, but it will faster.
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
 
     def row_only_magnitude_death(
         self, mask: MultiMask, weight: Tensor, name: str
@@ -1199,26 +1287,30 @@ class DSTScheduler2(object):
             row_magnitude = weight.data.norm(p=2, dim=(3, 5)).flatten()  # [p*q*r*k1]
             # index in dim p, index in dim q, index in dim r, index in dim k1
             num_nonzero_rows = mask["row_mask"].sum().item()
-            margin = 0 if self.magnitude_based_flag else self.power_choice_margin
+            margin = 0 if len(self.death_opts) == 0 else self.power_choice_margin
             num_row_remove_candidates = min(num_row_remove + margin, num_nonzero_rows)
+
+            ## select a slightly larger candidates pool
             selected_row_indices = torch.argsort(row_magnitude, descending=True)[
                 :num_row_remove_candidates
             ]
+            ## convert from flattened indices to high-dimensional indices to match row_mask
             selected_row_indices = torch.unravel_index(
                 selected_row_indices, mask["row_mask"].shape
             )  # tuple of indices in each dimension of row_mask
 
-            # only magnitude sorting, no crosstalk minimization
-            if self.magnitude_based_flag:
+            # only magnitude sorting, no power or crosstalk optimization
+            if len(self.death_opts) == 0:
                 mask["row_mask"][selected_row_indices] = 0
                 return mask
 
+            ## till this point, we know self.death_opts = ["crosstalk"]
             best_crosstalk_gain = float("-inf")
             best_row_mask = None
             for i, indices in enumerate(
                 combinations(torch.arange(num_row_remove_candidates), num_row_remove)
             ):
-                if i >= self.max_power_combinations:
+                if i >= self.max_combinations:
                     break
                 selected_row_indices = tuple(
                     row_index[indices] for row_index in selected_row_indices
@@ -1236,9 +1328,9 @@ class DSTScheduler2(object):
                 for row_id in range(num_row_remove):
                     affected_mask_indices.add(
                         (
-                            selected_row_indices[0][row_id].item(),
-                            selected_row_indices[1][row_id].item(),
-                            selected_row_indices[2][row_id].item(),
+                            selected_row_indices[0][row_id].item(),  # p
+                            selected_row_indices[1][row_id].item(),  # q
+                            selected_row_indices[2][row_id].item(),  # r
                         )
                     )
                 for mask_indices in affected_mask_indices:
@@ -1248,7 +1340,7 @@ class DSTScheduler2(object):
                             mask_indices[1],
                             mask_indices[2],
                             0,
-                            :,
+                            :,  # k1
                             0,
                         ]
                     ) - self.calc_crosstalk_score(
@@ -1257,7 +1349,7 @@ class DSTScheduler2(object):
                             mask_indices[1],
                             mask_indices[2],
                             0,
-                            :,
+                            :,  # k1
                             0,
                         ]
                     )
