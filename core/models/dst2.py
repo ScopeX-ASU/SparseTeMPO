@@ -508,16 +508,19 @@ class DSTScheduler2(nn.Module):
             ## |delta_phi| = |arccos(sqrt(ratio)) * 2 - pi/2|
             p = (
                 ratios.sqrt_()
-                .acos().mul_(2).sub_(np.pi/2).abs_()
+                .acos()
+                .mul_(2)
+                .sub_(np.pi / 2)
+                .abs_()
                 .mul_(self.pi_shift_power / np.pi)
                 .sum(dim=sum_dims)
             )  # [#combinations]
             # print("ratio", ratios)
             # print("p", p)
             power += p
-        
+
         # print(power)
-    
+
         return power  # [#combinations]
 
     @lru_cache(maxsize=32)
@@ -665,9 +668,9 @@ class DSTScheduler2(nn.Module):
             active_indices = torch.tensor([0, mask.shape[0]])
 
         # calc distances between consecutive active elements
-        
+
         dist = (active_indices[None, ...] - active_indices[..., None]).float().abs()
-        total_crosstalk = torch.exp(-2*dist).sum().item()
+        total_crosstalk = torch.exp(-2 * dist).sum().item()
 
         return -total_crosstalk
 
@@ -1099,26 +1102,25 @@ class DSTScheduler2(nn.Module):
                 new_mask = self.random_growth(
                     name, mask, self.pruned_number[name], weight
                 )
-            elif self.growth_mode == "momentum":
-                new_mask = self.momentum_growth(
-                    name, mask, self.pruned_number[name], weight
-                )
-            elif self.growth_mode == "gradient":
+            elif self.growth_mode == "gradient" and self.pruning_type == "unstructure":
                 new_mask = self.gradient_growth(
                     name, mask, self.pruned_number[name], weight
                 )
-            elif self.growth_mode == "row_only_gradient":
-                new_mask = self.row_only_gradient_growth(
-                    name, mask, self.pruned_number[name], weight
-                )
-            elif self.growth_mode == "col_only_gradient":
-                new_mask = self.col_only_gradient_growth(
-                    name, mask, self.pruned_number[name], weight
-                )
-            elif self.growth_mode == "row_col_gradient":
-                new_mask = self.row_col_gradient_growth(
-                    name, mask, self.pruned_number[name], weight
-                )
+            elif self.growth_mode.startswith("gradient"):
+                if self.pruning_type == "structure_row":
+                    new_mask = self.row_only_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.pruning_type == "structure_col":
+                    new_mask = self.col_only_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.pruning_type == "structure_row_col":
+                    new_mask = self.row_col_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                else:
+                    raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             self.masks[name] = new_mask
 
         self.apply_mask()
@@ -1204,130 +1206,16 @@ class DSTScheduler2(nn.Module):
 
         if num_remove == 0.0:
             return mask
-        
-        # weight here is [p, q, r, c, k1, k2]
-        p, q, r, c, k1, k2 = weight.shape
-        num_col_remove = int(round(num_remove / (r * k1)))  # num of col p*q*c*k2
 
-        if self.group == "layer":  # sort col magnitude per layer
-            # [p, q, r, k1]
-            # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
-            col_magnitude = weight.data.norm(p=2, dim=(2, 4)).flatten()  # [p*q*c*k2]
-            # index in dim p, index in dim q, index in dim r, index in dim k1
-            num_nonzero_cols = mask["col_mask"].sum().item()
-            margin = 0 if len(self.death_opts) == 0 else self.power_choice_margin
-            num_col_remove_candidates = min(num_col_remove + margin, num_nonzero_cols)
+        mask = self.col_only_magnitude_select(
+            mask=mask,
+            weight=weight,
+            name=name,
+            death=True,
+            num_select=num_remove,
+        )
 
-            ## select a slightly larger candidates pool
-            selected_col_indices = torch.argsort(col_magnitude, descending=True)[
-                :num_col_remove_candidates
-            ]
-            ## convert from flattened indices to high-dimensional indices to match col_mask
-            selected_col_indices = torch.unravel_index(
-                selected_col_indices, mask["col_mask"].shape
-            )  # tuple of indices in each dimension of row_mask
-
-            # only magnitude sorting, no power or crosstalk optimization
-            if len(self.death_opts) == 0 or margin == 0:
-                mask["col_mask"][selected_col_indices] = 0
-                return mask
-
-            ## till this point, we know self.death_opts might contain power or crosstalk optimization
-
-            ## we perform coordinate ascent to find the best combination in each optimization metrics
-            best_gain = float("-inf")
-            search_range = list(
-                combinations(range(num_col_remove_candidates), num_col_remove)
-            )
-            selected_range = []
-
-            def obj_fn(
-                opt: str, col_mask: Tensor, affected_mask_indices: Tuple
-            ) -> float:
-                ## affected_mask_indices: [(p, q, c), (p,q,c), ..., (p,q,c)]
-                if opt == "crosstalk":
-                    gain = sum(
-                        self.calc_crosstalk_score(col_mask[p, q, 0, c, 0, :])
-                        - self.calc_crosstalk_score(mask["col_mask"][p, q, 0, c, 0, :])
-                        for (p, q, c) in affected_mask_indices
-                    )
-                elif opt == "power":
-                    if DEBUG:
-                        print(affected_mask_indices)
-                    ps, qs, cs = zip(*affected_mask_indices)
-                    gain = self.cal_ports_power(
-                        mask["col_mask"][ps, qs, 0, cs, 0, :]
-                    ).sum().item() - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :]).sum().item()
-                else:
-                    raise NotImplementedError
-                return gain  # higher the better
-
-            for opt in self.death_opts:  # search for each optimization metric
-                if len(search_range) == 1:
-                    break  # only solution left, no need to search
-                best_gain = float("-inf")
-                best_col_masks = []  # can have multiple best solutions
-                for i, indices in enumerate(
-                    search_range
-                ):  # search in the current search range
-                    if i >= self.max_combinations:
-                        break
-                    indices = torch.tensor(indices)
-                    selected_col_indices_cand = tuple(
-                        col_index[indices] for col_index in selected_col_indices
-                    )
-                    ## check score for this combination
-                    ## crosstalk can be calculated based on its index along k2 dimension
-
-                    ## first try to prune cols in a cloned col_mask
-                    col_mask = mask["col_mask"].clone()
-                    col_mask[selected_col_indices_cand] = 0
-
-                    ## after pruning, calculate gain on affected row_masks
-                    affected_mask_indices = set()  # use set to avoid duplicate indices
-                    for col_id in range(num_col_remove):
-                        affected_mask_indices.add(
-                            (
-                                selected_col_indices_cand[0][col_id].item(),  # p
-                                selected_col_indices_cand[1][col_id].item(),  # q
-                                selected_col_indices_cand[3][col_id].item(),  # c
-                            )
-                        )
-                    affected_mask_indices = tuple(affected_mask_indices)
-                    gain = obj_fn(
-                        opt=opt,
-                        col_mask=col_mask,
-                        affected_mask_indices=affected_mask_indices,
-                    )
-
-                    if gain > best_gain:
-                        best_gain = gain
-                        best_col_masks = [col_mask]
-                        selected_range = [indices]
-                    elif gain == best_gain:
-                        best_col_masks.append(col_mask)
-                        selected_range.append(indices)
-                    if DEBUG:
-                        print(f"-----------------\niter {i} {opt}")
-                        print(f"selected indices", indices)
-                        print(f"selected col indices", selected_col_indices_cand)
-                        print(f"gain", gain)
-                        print(f"best gain", best_gain)
-
-                # shrink the search range to the selected range
-                search_range = selected_range
-                if DEBUG:
-                    print(f"best gain {opt}", best_gain, len(best_col_masks))
-                    print(search_range)
-
-            mask["col_mask"] = best_col_masks[0]
-            return mask
-        elif self.group == "block":
-            ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
-            ## through this will limit accuracy, but it will faster.
-            raise NotImplementedError
-        else:
-            raise NotImplementedError
+        return mask
 
     def row_only_magnitude_death(
         self, mask: MultiMask, weight: Tensor, name: str
@@ -1342,142 +1230,14 @@ class DSTScheduler2(nn.Module):
         if num_remove == 0.0:
             return mask
 
-        # weight here is [p, q, r, c, k1, k2]
-        p, q, r, c, k1, k2 = weight.shape
-        num_row_remove = int(
-            round(num_remove / (c * k2))
-        )  # num of rows to prune out of total p*q*r*k1 rows
+        mask = self.row_only_magnitude_select(
+            mask=mask,
+            weight=weight,
+            death=True,
+            num_select=num_remove,
+        )
 
-        if self.group == "layer":  # sort row magnitude per layer
-            # [p, q, r, k1]
-            # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
-            row_magnitude = weight.data.norm(p=2, dim=(3, 5)).flatten()  # [p*q*r*k1]
-            # index in dim p, index in dim q, index in dim r, index in dim k1
-            num_nonzero_rows = mask["row_mask"].sum().item()
-            margin = 0 if len(self.death_opts) == 0 else self.power_choice_margin
-            num_row_remove_candidates = min(num_row_remove + margin, num_nonzero_rows)
-
-            ## select a slightly larger candidates pool
-            selected_row_indices_flat = torch.argsort(row_magnitude, descending=True)[
-                :num_row_remove_candidates
-            ]
-
-            ## convert from flattened indices to high-dimensional indices to match row_mask
-            selected_row_indices = torch.unravel_index(
-                selected_row_indices_flat, mask["row_mask"].shape
-            )  # tuple of indices in each dimension of row_mask
-
-            if DEBUG:
-                print(f"row_mag", row_magnitude)
-                print(f"num_row_remove", num_row_remove)
-                print(f"num_row_remove_candidates", num_row_remove_candidates)
-                print(f"selected_row_indices", selected_row_indices_flat)
-                print(f"selected_row_indices unraveled", selected_row_indices)
-                print(mask["row_mask"].shape)
-
-            # only magnitude sorting, no power or crosstalk optimization
-            if len(self.death_opts) == 0:
-                mask["row_mask"][selected_row_indices] = 0
-                return mask
-
-            ## till this point, we know self.death_opts = ["crosstalk"]
-            best_crosstalk_gain = float("-inf")
-            best_row_mask = None
-            for i, indices in enumerate(
-                combinations(range(num_row_remove_candidates), num_row_remove)
-            ):
-                if i >= self.max_combinations:
-                    break
-
-                indices = torch.tensor(indices)
-                selected_row_indices_cand = tuple(
-                    row_index[indices] for row_index in selected_row_indices
-                )
-
-                if DEBUG:
-                    print(f"-----------------\niter {i}")
-                    print(f"selected indices", indices)
-                    print(f"selected row indices", selected_row_indices_cand)
-                ## check crosstalk score for this combination
-                ## crosstalk can be calculated based on its index along k1 dimension
-
-                ## first try to prune rows in a cloned row_mask
-                row_mask = mask["row_mask"].clone()
-                row_mask[selected_row_indices_cand] = 0
-
-                total_crosstalk_gain = 0
-                ## after pruning, calculate crosstalk gain on affected row_masks
-                affected_mask_indices = set()  # use set to avoid duplicate indices
-                for row_id in range(num_row_remove):
-                    affected_mask_indices.add(
-                        (
-                            selected_row_indices_cand[0][row_id].item(),  # p
-                            selected_row_indices_cand[1][row_id].item(),  # q
-                            selected_row_indices_cand[2][row_id].item(),  # r
-                        )
-                    )
-
-                for mask_indices in affected_mask_indices:
-                    gain = self.calc_crosstalk_score(
-                        row_mask[
-                            mask_indices[0],
-                            mask_indices[1],
-                            mask_indices[2],
-                            0,
-                            :,  # k1
-                            0,
-                        ]
-                    ) - self.calc_crosstalk_score(
-                        mask["row_mask"][
-                            mask_indices[0],
-                            mask_indices[1],
-                            mask_indices[2],
-                            0,
-                            :,  # k1
-                            0,
-                        ]
-                    )
-                    total_crosstalk_gain += gain
-                    if DEBUG:
-                        print(
-                            "crosstalk gain:",
-                            gain,
-                            "from",
-                            mask["row_mask"][
-                                mask_indices[0],
-                                mask_indices[1],
-                                mask_indices[2],
-                                0,
-                                :,  # k1
-                                0,
-                            ].long(),
-                            "to",
-                            row_mask[
-                                mask_indices[0],
-                                mask_indices[1],
-                                mask_indices[2],
-                                0,
-                                :,  # k1
-                                0,
-                            ].long(),
-                        )
-                
-                if total_crosstalk_gain > best_crosstalk_gain:
-                    best_crosstalk_gain = total_crosstalk_gain
-                    best_row_mask = row_mask
-                if DEBUG:
-                    print(f"affected_mask_indices", affected_mask_indices)
-                    print(f"total_crosstalk_gain", total_crosstalk_gain)
-                    print(f"best_crosstalk_gain", best_crosstalk_gain)
-
-            mask["row_mask"] = best_row_mask
-            return mask
-        elif self.group == "block":
-            ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
-            ## through this will limit accuracy, but it will faster.
-            raise NotImplementedError
-        else:
-            raise NotImplementedError
+        return mask
 
     def magnitude_death(self, mask, weight, name):
 
@@ -1569,192 +1329,340 @@ class DSTScheduler2(nn.Module):
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
         return new_mask
 
-    def col_only_gradient_growth(self, name, new_mask, total_regrowth, weight):
+    def col_only_gradient_growth(
+        self, name: str, new_mask: MultiMask, total_regrowth: int, weight: Tensor
+    ) -> MultiMask:
         if total_regrowth == 0:
             return new_mask
         grad = self.get_gradient_for_weights(weight)
         grad = grad * (~new_mask)
-        if self.pruning_type == "structure":
-            p, q, r, c, k1, k2 = weight.shape
+        p, q, r, c, k1, k2 = weight.shape
+        num_col_revive = int(round(total_regrowth / (r * k1)))
 
-            col_grad = np.linalg.norm(grad.cpu().data, ord=2, axis=(2, 4))
-            col_grad = col_grad.reshape(-1)
-            num_col_revive = int(total_regrowth / (r * k1))
-            # print(total_regrowth)
-            # print(num_col_revive)
+        new_mask = self.col_only_magnitude_select(
+            mask=new_mask,
+            weight=grad,
+            name=name,
+            death=False,
+            num_select=num_col_revive,
+        )
 
-            y = np.sort(col_grad)[::-1]
-            idx = np.argsort(col_grad)[::-1]
-            print(y, idx)
-            mask_reshape = np.array(new_mask["col_mask"].cpu()).reshape(-1)
-            print(mask_reshape)
-
-            gradient_threshold = y[num_col_revive - 1]
-            print(gradient_threshold)
-            grad_threshold_idx = (
-                (num_col_revive - self.power_choice_margin - 1)
-                if (num_col_revive - self.power_choice_margin - 1) > 0
-                else 0
-            )
-            gradient_threshold_margin = y[grad_threshold_idx].item()
-            print(gradient_threshold_margin)
-            # num_col_empty = new_mask["col_mask"].numel() - new_mask["col_mask"].sum().item()
-            print(idx[:num_col_revive])
-            mask_revive_reshape = mask_reshape.copy()
-            mask_revive_reshape[idx[:num_col_revive]] = True
-
-            col_grad = col_grad.reshape(p * q * c, k2)
-            mask_reshape = mask_reshape.reshape(p * q * c, k2)
-            mask_revive_reshape = mask_revive_reshape.reshape(p * q * c, k2)
-
-            for i in range(mask_reshape.shape[0]):
-                if self.gradient_based_flag:
-                    current_k2_grad_with_mask = col_grad[i] * (~mask_reshape[i])
-                    num_of_less_threshold = np.sum(
-                        (current_k2_grad_with_mask >= gradient_threshold)
-                        & (current_k2_grad_with_mask < gradient_threshold_margin)
-                    )
-                    if num_of_less_threshold != 0:
-                        print("We made it here")
-                        fixed_indices = np.where(
-                            col_grad[i]
-                            >= gradient_threshold_margin | mask_reshape[i]
-                            == True
-                        )
-                        num_of_zeros = np.sum(mask_revive_reshape[i] == True)
-                        mask_revive_reshape[i] = (
-                            self.magnitude_based_col_sparsity_patterns(
-                                num_of_less_threshold + num_of_zeros,
-                                num_of_zeros,
-                                fixed_indices,
-                            )
-                        )
-                else:
-                    num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
-                    num_of_zeros = np.sum(mask_revive_reshape[i] == False)
-                    if num_of_ones <= self.power_choice_margin:
-                        fixed_indices = np.sort(np.where(mask_reshape[i] == True))
-                        mask_revive_reshape[i] = (
-                            self.gradient_based_col_sparsity_patterns(
-                                num_of_zeros + num_of_ones, num_of_zeros, fixed_indices
-                            )
-                        )
-                    else:
-                        current_k2_grad_with_mask = col_grad[i] * (~mask_reshape[i])
-                        sorted_indices_loop = np.argsort(current_k2_grad_with_mask)
-                        fixed_indices = np.sort(
-                            np.concatenate(
-                                [
-                                    sorted_indices_loop[
-                                        num_of_zeros + self.power_choice_margin :
-                                    ],
-                                    np.where(mask_reshape[i] == True)[0],
-                                ]
-                            )
-                        )
-                        mask_revive_reshape[i] = (
-                            self.gradient_based_col_sparsity_patterns(
-                                k2 - fixed_indices.shape[0], num_of_zeros, fixed_indices
-                            )
-                        )
-            new_mask["col_mask"][...] = torch.tensor(
-                mask_revive_reshape.reshape(p, q, 1, c, 1, k2), device=self.device
-            )
-        elif self.pruning_type == "unstructure":
-            raise NotImplementedError
-        else:
-            raise ValueError("Unrecognized Pruning Type !")
         return new_mask
 
-    def row_only_gradient_growth(self, name, new_mask, total_regrowth, weight):
+    def row_only_gradient_growth(
+        self, name: str, new_mask: MultiMask, total_regrowth: int, weight: Tensor
+    ) -> MultiMask:
         if total_regrowth == 0:
             return new_mask
         grad = self.get_gradient_for_weights(weight)
         grad = grad * (~new_mask)
-        if self.pruning_type == "structure":
-            p, q, r, c, k1, k2 = weight.shape
+        p, q, r, c, k1, k2 = weight.shape
 
-            row_grad = np.norm(grad.cpu().data, p=2, dim=(3, 5))
-            row_grad = row_grad.reshape(-1)
-            num_row_revive = total_regrowth / (c * k2)
+        num_row_revive = int(round(total_regrowth / (c * k2)))
 
-            y = np.sort(row_grad)[::-1]
-            idx = np.argsort(row_grad)[::-1]
-            mask_reshape = new_mask["row_mask"].reshape(-2)
+        new_mask = self.row_only_magnitude_select(
+            mask=new_mask,
+            weight=grad,
+            name=name,
+            death=False,
+            num_select=num_row_revive,
+        )
 
-            gradient_threshold = y[num_row_revive - 1]
+        return new_mask
 
-            grad_threshold_idx = (
-                (num_row_revive - self.power_choice_margin - 1)
-                if (num_row_revive - self.power_choice_margin - 1) > 0
-                else 0
-            )
-            gradient_threshold_margin = y[grad_threshold_idx].item()
+    def row_only_magnitude_select(
+        self,
+        mask: MultiMask,
+        weight: Tensor,
+        name: str,
+        death: bool = True,
+        num_select: int = 0,
+    ) -> MultiMask:
+        # mask here is row mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        # weight here is [p, q, r, c, k1, k2]
+        p, q, r, c, k1, k2 = weight.shape
+        # num of rows to prune out of total p*q*r*k1 rows
+        num_row_select = int(round(num_select / (c * k2)))
+        opts = self.death_opts if death else self.growth_opts
 
-            # num_col_empty = new_mask["col_mask"].numel() - new_mask["col_mask"].sum().item()
-            mask_revive_reshape = mask_reshape[idx[:num_row_revive]] = 1
+        if self.group == "layer":  # sort row magnitude per layer
+            # [p, q, r, k1]
+            # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
+            row_magnitude = weight.data.norm(p=2, dim=(3, 5)).flatten()  # [p*q*r*k1]
+            # index in dim p, index in dim q, index in dim r, index in dim k1
+            if death:
+                num_to_select_rows = mask["row_mask"].sum().item()
+            else:  # growth
+                num_to_select_rows = (
+                    mask["row_mask"].numel() - mask["row_mask"].sum().item()
+                )
 
-            row_grad = row_grad.reshape(p * q * r, k1)
-            mask_reshape = mask_reshape.reshape(p * q * r, k1)
-            mask_revive_reshape = mask_revive_reshape.reshape(p * q * r, k1)
+            margin = 0 if len(opts) == 0 else self.power_choice_margin
+            num_row_select_candidates = min(num_row_select + margin, num_to_select_rows)
 
-            for i in range(mask_reshape.shape[0]):
-                if self.gradient_based_flag:
-                    current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
-                    num_of_less_threshold = np.sum(
-                        (current_k1_grad_with_mask >= gradient_threshold)
-                        & (current_k1_grad_with_mask < gradient_threshold_margin)
+            ## select a slightly larger candidates pool
+            selected_row_indices_flat = torch.argsort(row_magnitude, descending=True)[
+                :num_row_select_candidates
+            ]
+
+            ## convert from flattened indices to high-dimensional indices to match row_mask
+            selected_row_indices = torch.unravel_index(
+                selected_row_indices_flat, mask["row_mask"].shape
+            )  # tuple of indices in each dimension of row_mask
+
+            if DEBUG:
+                print(f"row_mag", row_magnitude)
+                print(f"num_row_select", num_row_select)
+                print(f"num_row_select_candidates", num_row_select_candidates)
+                print(f"selected_row_indices", selected_row_indices_flat)
+                print(f"selected_row_indices unraveled", selected_row_indices)
+                print(mask["row_mask"].shape)
+
+            # only magnitude sorting, no power or crosstalk optimization
+            if len(opts) == 0:
+                mask["row_mask"][selected_row_indices] = 0
+                return mask
+
+            ## till this point, we know self.death_opts = ["crosstalk"]
+            best_crosstalk_gain = float("-inf")
+            best_row_mask = None
+            for i, indices in enumerate(
+                combinations(range(num_row_select_candidates), num_row_select)
+            ):
+                if i >= self.max_combinations:
+                    break
+
+                indices = torch.tensor(indices)
+                selected_row_indices_cand = tuple(
+                    row_index[indices] for row_index in selected_row_indices
+                )
+
+                if DEBUG:
+                    print(f"-----------------\niter {i}")
+                    print(f"selected indices", indices)
+                    print(f"selected row indices", selected_row_indices_cand)
+                ## check crosstalk score for this combination
+                ## crosstalk can be calculated based on its index along k1 dimension
+
+                ## first try to prune rows in a cloned row_mask
+                row_mask = mask["row_mask"].clone()
+                row_mask[selected_row_indices_cand] = 0 if death else 1
+
+                total_crosstalk_gain = 0
+                ## after pruning, calculate crosstalk gain on affected row_masks
+                affected_mask_indices = set()  # use set to avoid duplicate indices
+                for row_id in range(num_row_select):
+                    affected_mask_indices.add(
+                        (
+                            selected_row_indices_cand[0][row_id].item(),  # p
+                            selected_row_indices_cand[1][row_id].item(),  # q
+                            selected_row_indices_cand[2][row_id].item(),  # r
+                        )
                     )
-                    if num_of_less_threshold != 0:
-                        fixed_indices = np.where(
-                            row_grad[i]
-                            >= gradient_threshold_margin | mask_reshape[i]
-                            == True
+
+                for mask_indices in affected_mask_indices:
+                    gain = self.calc_crosstalk_score(
+                        row_mask[
+                            mask_indices[0],
+                            mask_indices[1],
+                            mask_indices[2],
+                            0,
+                            :,  # k1
+                            0,
+                        ]
+                    ) - self.calc_crosstalk_score(
+                        mask["row_mask"][
+                            mask_indices[0],
+                            mask_indices[1],
+                            mask_indices[2],
+                            0,
+                            :,  # k1
+                            0,
+                        ]
+                    )
+                    total_crosstalk_gain += gain
+                    if DEBUG:
+                        print(
+                            "crosstalk gain:",
+                            gain,
+                            "from",
+                            mask["row_mask"][
+                                mask_indices[0],
+                                mask_indices[1],
+                                mask_indices[2],
+                                0,
+                                :,  # k1
+                                0,
+                            ].long(),
+                            "to",
+                            row_mask[
+                                mask_indices[0],
+                                mask_indices[1],
+                                mask_indices[2],
+                                0,
+                                :,  # k1
+                                0,
+                            ].long(),
                         )
-                        num_of_zeros = np.sum(mask_revive_reshape[i] == True)
-                        mask_revive_reshape[i] = (
-                            self.magnitude_based_row_sparsity_patterns(
-                                num_of_less_threshold + num_of_zeros,
-                                num_of_zeros,
-                                fixed_indices,
-                            )
-                        )
-                else:
-                    num_of_ones = np.sum(mask_reshape[i] ^ mask_revive_reshape[i])
-                    num_of_zeros = np.sum(mask_revive_reshape[i] == False)
-                    if num_of_ones <= self.power_choice_margin:
-                        fixed_indices = np.where(mask_reshape[i] == True)
-                        mask_revive_reshape[i] = (
-                            self.magnitude_based_row_sparsity_patterns(
-                                num_of_zeros + num_of_ones, num_of_zeros, fixed_indices
-                            )
-                        )
-                    else:
-                        current_k1_grad_with_mask = row_grad[i] * (~mask_reshape[i])
-                        sorted_indices_loop = np.argsort(current_k1_grad_with_mask)
-                        fixed_indices = np.sort(
-                            np.concatenate(
-                                [
-                                    sorted_indices_loop[
-                                        num_of_zeros + self.power_choice_margin :
-                                    ],
-                                    np.where(mask_reshape[i] == True),
-                                ]
-                            )
-                        )
-                        mask_revive_reshape[i] = (
-                            self.magnitude_based_row_sparsity_patterns(
-                                k1 - fixed_indices.shape[0], num_of_zeros, fixed_indices
-                            )
-                        )
-            new_mask["row_mask"] = torch.tensor(
-                mask_revive_reshape.reshape(p, q, r, 1, k1, 1), device=self.device
-            )
-        elif self.pruning_type == "unstructure":
+
+                if total_crosstalk_gain > best_crosstalk_gain:
+                    best_crosstalk_gain = total_crosstalk_gain
+                    best_row_mask = row_mask
+                if DEBUG:
+                    print(f"affected_mask_indices", affected_mask_indices)
+                    print(f"total_crosstalk_gain", total_crosstalk_gain)
+                    print(f"best_crosstalk_gain", best_crosstalk_gain)
+
+            mask["row_mask"] = best_row_mask
+            return mask
+        elif self.group == "block":
+            ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
+            ## through this will limit accuracy, but it will faster.
             raise NotImplementedError
         else:
-            raise ValueError("Unrecognized Pruning Type !")
-        return new_mask
+            raise NotImplementedError
+
+    def col_only_magnitude_select(
+        self,
+        mask: MultiMask,
+        weight: Tensor,
+        name: str,
+        death: bool = True,
+        num_select: int = 0,
+    ) -> MultiMask:
+        # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        # weight here is [p, q, r, c, k1, k2]
+        p, q, r, c, k1, k2 = weight.shape
+        num_col_select = int(round(num_select / (r * k1)))  # num of col p*q*c*k2
+        opts = self.death_opts if death else self.growth_opts
+
+        if self.group == "layer":  # sort col magnitude per layer
+            # [p, q, r, k1]
+            # if sorting globally in this layer, there might have many combinations, not tractable if with large p,q
+            col_magnitude = weight.data.norm(p=2, dim=(2, 4)).flatten()  # [p*q*c*k2]
+            # index in dim p, index in dim q, index in dim r, index in dim k1
+            if death:
+                num_to_select_cols = mask["col_mask"].sum().item()
+            else:  # growth
+                num_to_select_cols = (
+                    mask["col_mask"].numel() - mask["col_mask"].sum().item()
+                )
+            margin = 0 if len(opts) == 0 else self.power_choice_margin
+            num_col_select_candidates = min(num_col_select + margin, num_to_select_cols)
+
+            ## select a slightly larger candidates pool
+            selected_col_indices = torch.argsort(col_magnitude, descending=True)[
+                :num_col_select_candidates
+            ]
+            ## convert from flattened indices to high-dimensional indices to match col_mask
+            selected_col_indices = torch.unravel_index(
+                selected_col_indices, mask["col_mask"].shape
+            )  # tuple of indices in each dimension of row_mask
+
+            # only magnitude sorting, no power or crosstalk optimization
+            if len(opts) == 0 or margin == 0:
+                mask["col_mask"][selected_col_indices] = 0
+                return mask
+
+            ## till this point, we know self.death_opts might contain power or crosstalk optimization
+
+            ## we perform coordinate ascent to find the best combination in each optimization metrics
+            best_gain = float("-inf")
+            search_range = list(
+                combinations(range(num_col_select_candidates), num_col_select)
+            )
+            selected_range = []
+
+            def obj_fn(
+                opt: str, col_mask: Tensor, affected_mask_indices: Tuple
+            ) -> float:
+                ## affected_mask_indices: [(p, q, c), (p,q,c), ..., (p,q,c)]
+                if opt == "crosstalk":
+                    gain = sum(
+                        self.calc_crosstalk_score(col_mask[p, q, 0, c, 0, :])
+                        - self.calc_crosstalk_score(mask["col_mask"][p, q, 0, c, 0, :])
+                        for (p, q, c) in affected_mask_indices
+                    )
+                elif opt == "power":
+                    if DEBUG:
+                        print(affected_mask_indices)
+                    ps, qs, cs = zip(*affected_mask_indices)
+                    gain = (
+                        self.cal_ports_power(
+                            mask["col_mask"][ps, qs, 0, cs, 0, :]
+                        ).sum()
+                        - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :]).sum()
+                    ).item()
+                else:
+                    raise NotImplementedError
+                return gain  # higher the better
+
+            for opt in opts:  # search for each optimization metric
+                if len(search_range) == 1:
+                    break  # only solution left, no need to search
+                best_gain = float("-inf")
+                best_col_masks = []  # can have multiple best solutions
+                for i, indices in enumerate(
+                    search_range
+                ):  # search in the current search range
+                    if i >= self.max_combinations:
+                        break
+                    indices = torch.tensor(indices)
+                    selected_col_indices_cand = tuple(
+                        col_index[indices] for col_index in selected_col_indices
+                    )
+                    ## check score for this combination
+                    ## crosstalk can be calculated based on its index along k2 dimension
+
+                    ## first try to prune cols in a cloned col_mask
+                    col_mask = mask["col_mask"].clone()
+                    col_mask[selected_col_indices_cand] = 0 if death else 1
+
+                    ## after pruning, calculate gain on affected row_masks
+                    affected_mask_indices = set()  # use set to avoid duplicate indices
+                    for col_id in range(num_col_select):
+                        affected_mask_indices.add(
+                            (
+                                selected_col_indices_cand[0][col_id].item(),  # p
+                                selected_col_indices_cand[1][col_id].item(),  # q
+                                selected_col_indices_cand[3][col_id].item(),  # c
+                            )
+                        )
+                    affected_mask_indices = tuple(affected_mask_indices)
+                    gain = obj_fn(
+                        opt=opt,
+                        col_mask=col_mask,
+                        affected_mask_indices=affected_mask_indices,
+                    )
+
+                    if gain > best_gain:
+                        best_gain = gain
+                        best_col_masks = [col_mask]
+                        selected_range = [indices]
+                    elif gain == best_gain:
+                        best_col_masks.append(col_mask)
+                        selected_range.append(indices)
+                    if DEBUG:
+                        print(f"-----------------\niter {i} {opt}")
+                        print(f"selected indices", indices)
+                        print(f"selected col indices", selected_col_indices_cand)
+                        print(f"gain", gain)
+                        print(f"best gain", best_gain)
+
+                # shrink the search range to the selected range
+                search_range = selected_range
+                if DEBUG:
+                    print(f"best gain {opt}", best_gain, len(best_col_masks))
+                    print(search_range)
+
+            mask["col_mask"] = best_col_masks[0]
+            return mask
+        elif self.group == "block":
+            ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
+            ## through this will limit accuracy, but it will faster.
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
@@ -1792,7 +1700,7 @@ class DSTScheduler2(nn.Module):
     """
 
     def get_gradient_for_weights(self, weight):
-        grad = weight.grad.clone()
+        grad = weight.grad
         return grad
 
     def print_nonzero_counts(self):
