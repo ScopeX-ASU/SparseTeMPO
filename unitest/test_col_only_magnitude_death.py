@@ -1,7 +1,7 @@
 '''
 Date: 2024-04-14 17:40:57
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-04-14 17:49:21
+LastEditTime: 2024-04-14 18:11:26
 FilePath: /SparseTeMPO/unitest/test_col_only_magnitude_death.py
 '''
 
@@ -34,6 +34,7 @@ def test_DST_scheduler():
 
     dst_scheduler.set_magnitude_based_flag(False)
     dst_scheduler.set_gradient_based_flag(False)
+    print(dst_scheduler)
     x = torch.randn(1, 1, 8, 8, device=device)
     y = model(x)
     y.mean().backward()

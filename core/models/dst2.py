@@ -15,6 +15,8 @@ from torch import Tensor, nn
 
 __all__ = ["DSTScheduler2", "CosineDecay", "LinearDecay"]
 
+DEBUG = True
+
 
 class CosineDecay(object):
     def __init__(self, death_rate, T_max, eta_min=0.005, last_epoch=-1):
@@ -184,7 +186,7 @@ class MultiMask(object):
         return copy.deepcopy(self)
 
 
-class DSTScheduler2(object):
+class DSTScheduler2(nn.Module):
     _death_modes = {
         "magnitude",
         "random",
@@ -209,29 +211,29 @@ class DSTScheduler2(object):
     def __init__(
         self,
         optimizer,
-        death_rate=0.3,
-        growth_death_ratio=1.0,
+        death_rate: float = 0.3,
+        growth_death_ratio: float = 1.0,
         death_rate_decay=None,
-        death_mode="magnitude",
-        growth_mode="gradient",
-        redistribution_mode="momentum",
+        death_mode: str = "magnitude",
+        growth_mode: str = "gradient",
+        redistribution_mode: str = "momentum",
         args=None,
         spe_initial=None,
         train_loader=None,
-        pruning_type="structure_row",
-        pi_shift_power=30,
-        power_choice_margin=2,
-        ADC_power=3,
-        TIA_power=3,
-        HDAC_power=6,
+        pruning_type: str = "structure_row",
+        pi_shift_power: float = 30,
+        power_choice_margin: int = 2,
+        ADC_power: float = 3,
+        TIA_power: float = 3,
+        HDAC_power: float = 6,
         update_frequency: int = 100,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
         max_combinations: int = 100,  # set a maximum combinations to enumerate. otherwise it might have too many combinations
         device="cuda:0",
-    ):
+    ) -> None:
         ## Dynamic Sparse Training Scheduler
-
+        super().__init__()
         self.args = args
         self.loader = train_loader
         self.modules = []
@@ -629,21 +631,21 @@ class DSTScheduler2(object):
 
     def calc_crosstalk_score(self, mask: Tensor) -> float:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
         active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
         num_active = active_indices.numel()
         if num_active < 2:
             # Not enough active elements to calc separation or density.
-            return float("inf")
+            # should be higher than the best case with two actives
+            ## treated as 2 actives with distance of k
+            active_indices = torch.tensor([0, mask.shape[0]])
 
         # calc distances between consecutive active elements
-        dist = (active_indices[None, ...] - active_indices[..., None]).abs()
-        dist[torch.arange(num_active), torch.arange(num_active)] = num_active + 1
-        average_separation = dist.amin(dim=1).float().mean().item()
-        density_score = torch.std(active_indices.float()).item()
+        
+        dist = (active_indices[None, ...] - active_indices[..., None]).float().abs()
+        total_crosstalk = torch.exp(-2*dist).sum().item()
 
-        composite_score = average_separation + density_score
-
-        return composite_score
+        return -total_crosstalk
 
     def calc_TIA_ADC_power(
         self, mask_length: int, empty_rows: int, TIA_power: float, ADC_power: float
@@ -1316,13 +1318,22 @@ class DSTScheduler2(object):
             num_row_remove_candidates = min(num_row_remove + margin, num_nonzero_rows)
 
             ## select a slightly larger candidates pool
-            selected_row_indices = torch.argsort(row_magnitude, descending=True)[
+            selected_row_indices_flat = torch.argsort(row_magnitude, descending=True)[
                 :num_row_remove_candidates
             ]
+
             ## convert from flattened indices to high-dimensional indices to match row_mask
             selected_row_indices = torch.unravel_index(
-                selected_row_indices, mask["row_mask"].shape
+                selected_row_indices_flat, mask["row_mask"].shape
             )  # tuple of indices in each dimension of row_mask
+
+            if DEBUG:
+                print(f"row_mag", row_magnitude)
+                print(f"num_row_remove", num_row_remove)
+                print(f"num_row_remove_candidates", num_row_remove_candidates)
+                print(f"selected_row_indices", selected_row_indices_flat)
+                print(f"selected_row_indices unraveled", selected_row_indices)
+                print(mask["row_mask"].shape)
 
             # only magnitude sorting, no power or crosstalk optimization
             if len(self.death_opts) == 0:
@@ -1342,6 +1353,11 @@ class DSTScheduler2(object):
                 selected_row_indices = tuple(
                     row_index[indices] for row_index in selected_row_indices
                 )
+
+                if DEBUG:
+                    print(f"-----------------\niter {i}")
+                    print(f"selected indices", indices)
+                    print(f"selected row indices", selected_row_indices)
                 ## check crosstalk score for this combination
                 ## crosstalk can be calculated based on its index along k1 dimension
 
@@ -1360,8 +1376,9 @@ class DSTScheduler2(object):
                             selected_row_indices[2][row_id].item(),  # r
                         )
                     )
+
                 for mask_indices in affected_mask_indices:
-                    total_crosstalk_gain += self.calc_crosstalk_score(
+                    gain = self.calc_crosstalk_score(
                         row_mask[
                             mask_indices[0],
                             mask_indices[1],
@@ -1380,6 +1397,34 @@ class DSTScheduler2(object):
                             0,
                         ]
                     )
+                    total_crosstalk_gain += gain
+                    if DEBUG:
+                        print(
+                            "crosstalk gain:",
+                            gain,
+                            "from",
+                            mask["row_mask"][
+                                mask_indices[0],
+                                mask_indices[1],
+                                mask_indices[2],
+                                0,
+                                :,  # k1
+                                0,
+                            ].long(),
+                            "to",
+                            row_mask[
+                                mask_indices[0],
+                                mask_indices[1],
+                                mask_indices[2],
+                                0,
+                                :,  # k1
+                                0,
+                            ].long(),
+                        )
+                if DEBUG:
+                    print(f"affected_mask_indices", affected_mask_indices)
+                    print(f"total_crosstalk_gain", total_crosstalk_gain)
+                    print(f"best_crosstalk_gain", best_crosstalk_gain)
                 if total_crosstalk_gain > best_crosstalk_gain:
                     best_crosstalk_gain = total_crosstalk_gain
                     best_row_mask = row_mask
@@ -1765,3 +1810,14 @@ class DSTScheduler2(object):
             return layer_fired_weights, total_fired_weights
         else:
             raise ValueError("Unrecognized Pruning Type !")
+
+    def extra_repr(self) -> str:
+        s = f"pruning_type={self.pruning_type}, "
+        s += f"death_rate={self.death_rate}, "
+        s += f"death_mode={self.death_mode}, "
+        s += f"growth_mode={self.growth_mode}, "
+        s += f"power_choice_margin={self.power_choice_margin}, "
+        s += f"max_combinations={self.max_combinations}, "
+        s += f"group={self.group}"
+
+        return s
