@@ -692,6 +692,29 @@ class DSTScheduler2(nn.Module):
             total_crosstalk.append(self.calc_crosstalk_score(m))
         return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
+    def calc_TIA_ADC_powers(self, mask: Tensor) -> Tensor:
+        ## given a sparsity mask, find its corresponding TIA and ADC power, please provide row mask only
+        shape = mask.shape[:-1]
+        mask = mask.flatten(0, -2)
+        total_power = []
+        for m in mask:
+            array_length = m.shape[0]
+            empty_rows = m.sum(-1)
+            total_power.append(self.calc_TIA_ADC_power(array_length, empty_rows, self.TIA_power, self.ADC_power))
+        print(total_power)
+        return torch.tensor(total_power, device=self.device).view(shape)
+
+    def calc_HDAC_powers(self, mask: Tensor) -> Tensor:
+        ## given a sparsity mask, find its corresponding HDAC power, please provide column mask only
+        shape = mask.shape[:-1]
+        mask = mask.flatten(0, -2)
+        total_power = []
+        for m in mask:
+            array_length = m.shape[0]
+            empty_cols = m.sum(-1)
+            total_power.append(self.calc_HDAC_power(array_length, empty_cols, self.HDAC_power))
+        return torch.tensor(total_power, device=self.device).view(shape)
+
     def calc_TIA_ADC_power(
         self,
         mask_length: int | Tensor,
@@ -1276,6 +1299,26 @@ class DSTScheduler2(nn.Module):
 
         return mask
 
+    def row_col_magnitude_death(
+        self, mask: MultiMask, weight: Tensor, name: str
+    ) -> MultiMask:
+         # mask here is row mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        if mask.num_nonzeros() == mask.numel():
+            return mask
+        
+        death_rate = self.name2death_rate[name]
+        num_remove = math.ceil(death_rate * self.name2nonzeros[name])
+
+        mask = self.row_col_magnitude_select(
+            mask=mask,
+            weight=weight,
+            name=name,
+            death=True,
+            num_select=num_remove,
+        )
+
+        return mask
+
     def magnitude_death(self, mask, weight, name):
 
         if mask.sum().item() == mask.numel():
@@ -1392,9 +1435,26 @@ class DSTScheduler2(nn.Module):
             return new_mask
         grad = self.get_gradient_for_weights(weight)
         grad = grad * (~new_mask)
-        p, q, r, c, k1, k2 = weight.shape
 
         new_mask = self.row_only_magnitude_select(
+            mask=new_mask,
+            weight=grad,
+            name=name,
+            death=False,
+            num_select=total_regrowth,
+        )
+
+        return new_mask
+    
+    def row_col_gradient_growth(
+        self, name: str, new_mask: MultiMask, total_regrowth: int, weight: Tensor
+    ) -> MultiMask:   
+        if total_regrowth == 0:
+            return new_mask
+        grad = self.get_gradient_for_weights(weight)
+        grad = grad * (~new_mask)
+
+        new_mask = self.row_col_magnitude_select(
             mask=new_mask,
             weight=grad,
             name=name,
@@ -1734,6 +1794,69 @@ class DSTScheduler2(nn.Module):
         else:
             raise NotImplementedError
 
+    def row_col_magnitude_select(
+        self, 
+        mask: MultiMask, 
+        weight: Tensor, 
+        name: str, 
+        death: bool = True, 
+        num_select: int = 0, 
+    ) -> MultiMask:
+        
+        p, q, r, c, k1, k2 = weight.shape
+        max_num_col_selected = int(round(num_select / (r * k1)))
+
+        best_score = float("-inf") # Higher the better
+        best_pattern = None
+
+        # Iterate all possibility from 0 row to all possible rows
+        for num_col_selected in range(max_num_col_selected + 1):
+            # Find the number of elements need to be removed for rows and cols.
+            num_of_elements_col_removes = num_col_selected * (r * k1)
+            num_of_elements_row_removes = num_select - num_of_elements_col_removes
+
+            new_mask = self.col_only_magnitude_select(
+                mask=mask,
+                weight=weight,
+                name=name,
+                death=death,
+                num_select=num_of_elements_col_removes
+            )
+
+            # Get the new weight for row pruning to process
+            new_weight_for_row_pruning = weight * new_mask
+
+            # Continue after col been pruned, thus pass in new mask
+            new_mask = self.row_only_magnitude_select(
+                mask=new_mask,
+                weight=new_weight_for_row_pruning,
+                name=name,
+                death=death,
+                num_select=num_of_elements_row_removes
+            )
+            
+
+            total_power = self.cal_ports_power(new_mask["col_mask"].flatten(0, -2)).sum().item()
+            total_power += self.calc_TIA_ADC_powers(new_mask["row_mask"][..., 0]).sum().item()
+            total_power += self.calc_HDAC_powers(new_mask["col_mask"][...]).sum().item()
+            
+            crosstalk = (
+                self.calc_crosstalk_scores(new_mask["col_mask"]).sum().item()
+                + self.calc_crosstalk_scores(new_mask["row_mask"][..., 0]).sum().item()
+            )
+
+            # Set a bias, since row pruning would hurt CNN a lot due to kernenl been pruned out, 
+            # we would like to set a bias if the row pruning elements is less than col pruning elements
+            bias = 5 if num_of_elements_row_removes < num_of_elements_col_removes else 0
+
+            new_total_score = (1 / total_power) + crosstalk + bias
+
+            if new_total_score > best_score:
+                best_pattern = new_mask
+
+        return best_pattern
+
+
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
 
@@ -1817,28 +1940,36 @@ class DSTScheduler2(nn.Module):
         total_power = 0
         powers = {}
         for name, mask in self.masks.items():
+            p, q, r, _, k1, _ = mask["row_mask"].shape
+            _, _, _, c, _, k2 = mask["col_mask"].shape
             switch_power = (
                 self.cal_ports_power(mask["col_mask"].flatten(0, -2)).sum().item()
             )
-            TIA_ADC_power = (
-                self.calc_TIA_ADC_power(
-                    mask["row_mask"].shape[-2],
-                    (~mask["row_mask"]).sum(-2).flatten(),
-                    self.TIA_power,
-                    self.ADC_power,
-                )
-                .sum()
-                .item()
-            )
-            HDAC_power = (
-                self.calc_HDAC_power(
-                    mask["col_mask"].shape[-1],
-                    (~mask["col_mask"]).sum(-1).flatten(),
-                    self.HDAC_power,
-                )
-                .sum()
-                .item()
-            )
+            # TIA_ADC_power = (
+            #     self.calc_TIA_ADC_power(
+            #         mask["row_mask"].shape[-2],
+            #         (~mask["row_mask"]).sum(-2).flatten(),
+            #         self.TIA_power,
+            #         self.ADC_power,
+            #     )
+            #     .sum()
+            #     .item()
+            # )
+
+            # HDAC_power = (
+            #     self.calc_HDAC_power(
+            #         mask["row_mask"].shape[-1],
+            #         (~mask["col_mask"]).sum(-1).flatten(),
+            #         self.HDAC_power,
+            #     )
+            #     .sum()
+            #     .item()
+            # )
+            TIA_ADC_power = self.calc_TIA_ADC_powers(mask["row_mask"][..., 0]).sum().item()
+            HDAC_power = self.calc_HDAC_powers(mask["col_mask"][...]).sum().item()
+
+
+
             powers[name] = {
                 "switch_power": switch_power,
                 "TIA_ADC_power": TIA_ADC_power,
