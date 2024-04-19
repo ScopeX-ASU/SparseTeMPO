@@ -670,35 +670,37 @@ class DSTScheduler2(nn.Module):
     def calc_crosstalk_score(self, mask: Tensor, is_col: bool = True) -> float:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
-        active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
-        num_active = active_indices.numel()
-        if num_active < 2:
-            # Not enough active elements to calc separation or density.
-            # should be higher than the best case with two actives
-            ## treated as 2 actives with distance of k
-            active_indices = torch.tensor([0, mask.shape[0]])
-            num_active = 2
+        # active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
+        # num_active = active_indices.numel()
+        # if num_active < 2:
+        #     # Not enough active elements to calc separation or density.
+        #     # should be higher than the best case with two actives
+        #     ## treated as 2 actives with distance of k
+        #     active_indices = torch.tensor([0, mask.shape[0]])
+        #     num_active = 2
 
-        # calc distances between consecutive active elements
+        # # calc distances between consecutive active elements
 
-        dist = (
-            active_indices[None, ...] - active_indices[..., None]
-        ).float().abs() * self.node_spacing[int(is_col)]
-        total_crosstalk = torch.exp(-0.1 * dist).sum().item() - num_active
+        # dist = (
+        #     active_indices[None, ...] - active_indices[..., None]
+        # ).float().abs() * self.node_spacing[int(is_col)]
+        # total_crosstalk = torch.exp(-0.1 * dist).sum().item() - num_active
 
-        return -total_crosstalk
+        # return -total_crosstalk
+        return self.modules[0].crosstalk_scheduler.calc_crosstalk_score(mask, is_col)
 
-    def calc_crosstalk_scores(self, mask: Tensor, is_col: bool = True) -> Tensor:
+    def calc_crosstalk_scores(self, masks: Tensor, is_col: bool = True) -> Tensor:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
         ## mask: [num_combinations, array_length]
         ## return: [num_combinations]
-        shape = mask.shape[:-1]
-        mask = mask.flatten(0, -2)
-        total_crosstalk = []
-        for m in mask:
-            total_crosstalk.append(self.calc_crosstalk_score(m, is_col))
-        return torch.tensor(total_crosstalk, device=self.device).view(shape)
+        # shape = mask.shape[:-1]
+        # mask = mask.flatten(0, -2)
+        # total_crosstalk = []
+        # for m in mask:
+        #     total_crosstalk.append(self.calc_crosstalk_score(m, is_col))
+        # return torch.tensor(total_crosstalk, device=self.device).view(shape)
+        return self.modules[0].crosstalk_scheduler.calc_crosstalk_scores(masks, is_col)
 
     def calc_TIA_ADC_powers(self, mask: Tensor) -> Tensor:
         ## given a sparsity mask, find its corresponding TIA and ADC power, please provide row mask only

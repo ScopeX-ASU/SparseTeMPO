@@ -58,6 +58,11 @@ noise:
   crosstalk_factor: 0
   random_state: 42
   weight_noise_std: 0.0
+  crosstalk_scheduler:
+    interv_h: 15
+    interv_v: 120
+    interv_s: 10
+  noise_flag: 0
 
 checkpoint:
   save_best_model_k: 3

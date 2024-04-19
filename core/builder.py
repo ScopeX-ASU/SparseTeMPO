@@ -34,6 +34,7 @@ from core.datasets import (
 )
 
 from core.models import *
+from core.models.layers.utils import CrosstalkScheduler
 
 __all__ = [
     "make_dataloader",
@@ -231,9 +232,19 @@ def make_model(
             act_cfg=model_cfg.act_cfg,
             device=device,
         ).to(device)
+        model.reset_parameters(random_state)
     else:
         model = None
         raise NotImplementedError(f"Not supported model name: {model_cfg.name}")
+    
+    crosstalk_scheduler = CrosstalkScheduler(
+        interv_h=configs.noise.crosstalk_scheduler.interv_h,
+        interv_v=configs.noise.crosstalk_scheduler.interv_v,
+        interv_s=configs.noise.crosstalk_scheduler.interv_s,
+    )
+    model.set_noise_schedulers({"crosstalk_scheduler": crosstalk_scheduler})
+    model.set_noise_flag(configs.noise.noise_flag)
+
     return model
 
 

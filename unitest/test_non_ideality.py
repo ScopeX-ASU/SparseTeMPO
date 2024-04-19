@@ -64,6 +64,14 @@ def test_crosstalk():
     plt.ylabel("N-MAE")
     plt.savefig("./unitest/figs/crosstalk_interv_h.png", dpi=300)
 
+    crosstalk_scheduler.interv_h = 15   
+    for i in range(2):
+        for j in range(2):
+            for k in range(2):
+                for l in range(2):
+                    mask = torch.tensor([i, j, k, l], device=device)
+                    score = crosstalk_scheduler.calc_crosstalk_score(mask=mask, is_col=False)
+                    print(f"mask: {mask}, score: {score}")
 
 def test_output_noise():
     device = "cuda:0"

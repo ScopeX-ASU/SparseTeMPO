@@ -526,6 +526,7 @@ class CrosstalkScheduler(object):
             -1.04655916e-01,
             1,
         ],  # y=max(0, p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6)
+        crosstalk_exp_coupling_factor: float = 0.21474366,  # exp(-a*x)
         interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
         interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
         interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
@@ -535,6 +536,7 @@ class CrosstalkScheduler(object):
         self.crosstalk_coupling_factor = torch.tensor(
             crosstalk_coupling_factor, device=device
         )
+        self.crosstalk_exp_coupling_factor = crosstalk_exp_coupling_factor
         self.interv_h = interv_h
         self.interv_v = interv_v
         self.interv_s = interv_s
@@ -574,12 +576,12 @@ class CrosstalkScheduler(object):
         self, distance: Tensor, crosstalk_coupling_factor: Tensor
     ) -> Tensor:
         ## less than 20 um, polynomial is more accurate, higher than 20 um, exp is more accurate
-        out = torch.where(
+        gamma = torch.where(
             distance < 20,
             polynomial(distance, crosstalk_coupling_factor),
-            torch.exp(-0.21474366 * distance),
+            torch.exp(-self.crosstalk_exp_coupling_factor * distance),
         )
-        return out
+        return gamma
 
     def _get_crosstalk_matrix(
         self, crosstalk_coupling_factor, phase, interv_h, interv_v, interv_s
@@ -589,26 +591,21 @@ class CrosstalkScheduler(object):
             torch.arange(k1, device=self.device, dtype=torch.float),
             torch.arange(k2, device=self.device, dtype=torch.float),
         )
-        print(X.shape, Y.shape)
         X, Y = X.flatten(), Y.flatten()
-        print(X.shape, Y.shape)
+
         mask = phase.data.flatten(-2, -1).unsqueeze(-2) < 0
+        X_distance = X.unsqueeze(1).sub(X.unsqueeze(0)).mul_(interv_h)  # [k1*k2, k1*k2]
+        Y_distance_sq = Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2)
         distance_upper = (
-            X.unsqueeze(1)
-            .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .sub(interv_s * mask)  # [..., k1*k2,k1*k2]
+            X_distance.sub(interv_s * mask)  # [..., k1*k2,k1*k2]
             .square_()
-            .mul_(interv_h**2)
-            .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
+            .add_(Y_distance_sq)
         ).sqrt_()
 
         distance_lower = (
-            X.unsqueeze(1)
-            .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .add(interv_s * (~mask))  # [..., k1*k2,k1*k2]
+            X_distance.add(interv_s * (~mask))  # [..., k1*k2,k1*k2]
             .square_()
-            .mul_(interv_h**2)
-            .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
+            .add_(Y_distance_sq)
         ).sqrt_()
 
         self.crosstalk_matrix = self._get_crosstalk_gamma(
@@ -655,6 +652,62 @@ class CrosstalkScheduler(object):
         return torch.einsum("...ij,...ji->...i", crosstalk_matrix, flat_phase_abs).view(
             phase_shape
         )
+
+    def calc_crosstalk_score(self, mask: Tensor, is_col: bool = True) -> float:
+        ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
+        active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
+        num_active = active_indices.numel()
+        if num_active < 2:
+            # Not enough active elements to calc separation or density.
+            # should be higher than the best case with two actives
+            ## treated as 2 actives with distance of k
+            active_indices = torch.tensor([0, mask.shape[0]], device=mask.device)
+            num_active = 2
+
+        # calc distances between consecutive active elements
+
+        node_spacing = self.interv_v if is_col else self.interv_h
+
+        ## MZI center to center distance, can be positive or negative
+        ## positive means aggressor is to the right of the victim (left/right layout)
+        center_dist = (
+            active_indices.unsqueeze(1)
+            .sub(active_indices.unsqueeze(0))  # [k1*k2, k1*k2]
+            .float()
+            .mul_(node_spacing)
+        )
+        ## to estimate, aggressor MZI's center to victim's upper arm, can be positive or negative
+
+        distance_upper = (center_dist - self.interv_s / 2).abs()
+
+        ## to estimate, aggressor MZI's center to victim's lower arm, can be positive or negative
+        distance_lower = (center_dist + self.interv_s / 2).abs()
+
+        ## because we do not know the actual aggressor's phase, we do not know whether to include interv_s or not.
+        ## We use a rough estimation, here we overestimate the crosstalk.
+        total_crosstalk = self._get_crosstalk_gamma(
+            distance_upper, self.crosstalk_coupling_factor
+        ).sub_(
+            self._get_crosstalk_gamma(distance_lower, self.crosstalk_coupling_factor)
+        )
+        total_crosstalk[torch.arange(num_active), torch.arange(num_active)] = 0.0
+
+        ## column-wise sum, sum over all aggressors for each victim, positive/negative might cancel out
+        ## then accumulate the absolute crosstalk factors over all victims
+        ## '-' to make the score higher the better
+        return -total_crosstalk.sum(1).abs().sum().item()
+
+    def calc_crosstalk_scores(self, masks: Tensor, is_col: bool = True) -> Tensor:
+        ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
+        ## mask: [num_combinations, array_length]
+        ## return: [num_combinations]
+        shape = masks.shape[:-1]
+        total_crosstalk = [
+            self.calc_crosstalk_score(m, is_col) for m in masks.flatten(0, -2)
+        ]
+        return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
 
 class DeterministicCtx:
