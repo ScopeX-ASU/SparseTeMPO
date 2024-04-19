@@ -44,9 +44,17 @@ __all__ = [
     "calculate_grad_hessian",
     "merge_chunks",
     "partition_chunks",
-    "pad_quantize_fn", 
+    "pad_quantize_fn",
     "hard_diff_round",
 ]
+
+
+def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
+    ## coeff: from high to low order coefficient, last one is constant
+    ## e.g., [p5, p4, p3, p2, p1, p0] -> p5*x^5 + p4*x^4 + p3*x^3 + p2*x^2 + p1*x + p0
+    x = torch.stack([x.pow(i) for i in range(coeff.size(0) - 1, 0, -1)], dim=-1)
+    out = x.matmul(coeff[:-1]).add_(coeff[-1])
+    return out
 
 
 class STE(torch.autograd.Function):
@@ -510,14 +518,23 @@ class GlobalTemperatureScheduler(object):
 class CrosstalkScheduler(object):
     def __init__(
         self,
-        crosstalk_coupling_factor: float = 0.05,  # parameter to control the crosstalk intensity
-        interv_h: float = 100.0,  # horizontal spacing (unit: um) between the center of two MZIs
-        interv_v: float = 100.0,  # vertical spacing (unit: um) between the center of two MZIs
-        interv_s: float = 15.0,  # horizontal spacing (unit: um) between two arms of an MZI
+        crosstalk_coupling_factor: Tuple[float, ...] = [
+            2.90822693e-06,
+            -1.53430272e-04,
+            2.68998271e-03,
+            -1.29270421e-02,
+            -1.04655916e-01,
+            1,
+        ],  # y=max(0, p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6)
+        interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
+        interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
+        interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
         device="cuda:0",
     ) -> None:
         super().__init__()
-        self.crosstalk_coupling_factor = crosstalk_coupling_factor
+        self.crosstalk_coupling_factor = torch.tensor(
+            crosstalk_coupling_factor, device=device
+        )
         self.interv_h = interv_h
         self.interv_v = interv_v
         self.interv_s = interv_s
@@ -553,6 +570,17 @@ class CrosstalkScheduler(object):
             self.interv_s,
         )
 
+    def _get_crosstalk_gamma(
+        self, distance: Tensor, crosstalk_coupling_factor: Tensor
+    ) -> Tensor:
+        ## less than 20 um, polynomial is more accurate, higher than 20 um, exp is more accurate
+        out = torch.where(
+            distance < 20,
+            polynomial(distance, crosstalk_coupling_factor),
+            torch.exp(-0.21474366 * distance),
+        )
+        return out
+
     def _get_crosstalk_matrix(
         self, crosstalk_coupling_factor, phase, interv_h, interv_v, interv_s
     ) -> Tensor:
@@ -583,9 +611,9 @@ class CrosstalkScheduler(object):
             .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
         ).sqrt_()
 
-        self.crosstalk_matrix = torch.exp(
-            distance_upper.mul_(-crosstalk_coupling_factor)
-        ).sub_(torch.exp(distance_lower.mul_(-crosstalk_coupling_factor)))
+        self.crosstalk_matrix = self._get_crosstalk_gamma(
+            distance_upper, crosstalk_coupling_factor
+        ).sub_(self._get_crosstalk_gamma(distance_lower, crosstalk_coupling_factor))
         self.crosstalk_matrix[..., torch.arange(k1 * k2), torch.arange(k1 * k2)] = 1.0
         return self.crosstalk_matrix
 
@@ -928,7 +956,9 @@ def uniform_quantize(num_levels, gradient_clip=False):
         @staticmethod
         def forward(ctx, input):
             # n = float(2 ** k - 1)
-            n = num_levels - 1  # explicit assign number of quantization level,e.g., k=5 or 8
+            n = (
+                num_levels - 1
+            )  # explicit assign number of quantization level,e.g., k=5 or 8
             out = torch.round(input * n) / n
             return out
 
@@ -956,7 +986,9 @@ class pad_quantize_fn(torch.nn.Module):
         self.w_bit = w_bit  # w_bit is the number of quantization level, not bitwidth !
 
         self.quant_ratio = quant_ratio
-        assert 0 <= quant_ratio <= 1, logger.error(f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}")
+        assert 0 <= quant_ratio <= 1, logger.error(
+            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
+        )
         self.uniform_q = uniform_quantize(num_levels=w_bit, gradient_clip=True)
         self.v_max = v_max
 
@@ -982,14 +1014,18 @@ class pad_quantize_fn(torch.nn.Module):
                 0.99,
                 1,
             ][min(self.w_bit, 16)]
-        assert 0 <= quant_ratio <= 1, logger.error(f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}")
+        assert 0 <= quant_ratio <= 1, logger.error(
+            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
+        )
         self.quant_ratio = quant_ratio
 
     def forward(self, x):
         if self.quant_ratio < 1 and self.training:
             ### implementation from fairseq
             ### must fully quantize during inference
-            quant_noise_mask = torch.empty_like(x, dtype=torch.bool).bernoulli_(1 - self.quant_ratio)
+            quant_noise_mask = torch.empty_like(x, dtype=torch.bool).bernoulli_(
+                1 - self.quant_ratio
+            )
         else:
             quant_noise_mask = None
 
@@ -1018,7 +1054,10 @@ class HardRoundFunction(torch.autograd.Function):
     def backward(ctx, grad_output: Tensor) -> Tensor:
         return grad_output.clone().masked_fill_(ctx.mask, 0)
 
+
 def hard_diff_round(x: Tensor) -> Tensor:
     """Project to the closest permutation matrix"""
-    assert x.size(-1) == x.size(-2), f"input x has to be a square matrix, but got {x.size()}"
+    assert x.size(-1) == x.size(
+        -2
+    ), f"input x has to be a square matrix, but got {x.size()}"
     return HardRoundFunction.apply(x)
