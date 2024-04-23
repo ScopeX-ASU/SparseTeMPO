@@ -59,3 +59,4 @@ dst_scheduler:
   T_max: 0.8
   density: 0.8
   init_mode: uniform
+  splitter_biases: [90, 90, 90] # degree, 3 levels for k2=8

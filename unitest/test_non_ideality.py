@@ -31,14 +31,14 @@ def test_mode_switch():
 
 def test_crosstalk():
     device = "cuda:0"
-    layer = TeMPOBlockLinear(16, 16, miniblock=[4, 4, 4, 4], device=device)
+    layer = TeMPOBlockLinear(4, 4, miniblock=[1, 1, 4, 4], device=device)
     crosstalk_scheduler = CrosstalkScheduler(
         crosstalk_coupling_factor=[
-            2.90822693e-06,
-            -1.53430272e-04,
-            2.68998271e-03,
-            -1.29270421e-02,
-            -1.04655916e-01,
+            3.31603839e-07,
+            -1.39558126e-05,
+            -4.84365615e-05,
+            1.03081137e-02,
+            -1.77423805e-01,
             1,
         ],
         interv_h=25,
@@ -47,31 +47,42 @@ def test_crosstalk():
         device=device,
     )
     layer.crosstalk_scheduler = crosstalk_scheduler
+    layer.weight.data.fill_(-1)
     weight = layer.build_weight(enable_noise=False, enable_ste=True)
+    phase, _ = layer.build_phase_from_weight(weight.data)
+    phase = phase.clone()
 
-    nmaes = []
+    weight_nmaes = []
+    phase_nmaes = []
     layer.set_crosstalk_noise(True)
-    for interv_h in range(1, 31):
-        layer.crosstalk_scheduler.interv_h = interv_h
+    for interv_h in range(10, 41):
+        layer.crosstalk_scheduler.set_spacing(interv_h=interv_h)
         weight_noisy = layer.build_weight(enable_noise=True, enable_ste=True)
-        # print(weight)
-        # print(weight_noisy)
-        nmae = torch.norm(weight_noisy - weight, p=1) / torch.norm(weight, p=1)
-        nmaes.append(nmae.item())
-        print(f"interv_h: {interv_h}, N-MAE: {nmae}")
-    plt.plot(range(1, 31), nmaes)
-    plt.xlabel("interv_h (um)")
-    plt.ylabel("N-MAE")
+        print(weight_noisy)
+        phase_noisy = layer.noisy_phase.clone()
+
+        weight_nmae = torch.norm(weight_noisy - weight, p=1) / weight.norm(1)
+        phase_nmae = torch.norm(phase_noisy - phase, p=1) / phase.norm(1)
+        weight_nmaes.append(weight_nmae.item())
+        phase_nmaes.append(phase_nmae.item())
+        print(f"interv_h: {interv_h}, N-MAE: weight={weight_nmae:.5f} phase={phase_nmae:.5f}")
+    fig, axes = plt.subplots(2, 1, figsize=(6, 8))
+    axes[0].plot(range(10, 41), weight_nmaes)
+    axes[0].set_xlabel("interv_h (um)")
+    axes[0].set_ylabel("Weight N-MAE")
+    axes[1].plot(range(10, 41), phase_nmaes)
+    axes[1].set_xlabel("interv_h (um)")
+    axes[1].set_ylabel("Phase N-MAE")
     plt.savefig("./unitest/figs/crosstalk_interv_h.png", dpi=300)
 
-    crosstalk_scheduler.interv_h = 15   
-    for i in range(2):
-        for j in range(2):
-            for k in range(2):
-                for l in range(2):
-                    mask = torch.tensor([i, j, k, l], device=device)
-                    score = crosstalk_scheduler.calc_crosstalk_score(mask=mask, is_col=False)
-                    print(f"mask: {mask}, score: {score}")
+    # crosstalk_scheduler.interv_h = 15   
+    # for i in range(2):
+    #     for j in range(2):
+    #         for k in range(2):
+    #             for l in range(2):
+    #                 mask = torch.tensor([i, j, k, l], device=device)
+    #                 score = crosstalk_scheduler.calc_crosstalk_score(mask=mask, is_col=False)
+    #                 print(f"mask: {mask}, score: {score}")
 
 def test_output_noise():
     device = "cuda:0"

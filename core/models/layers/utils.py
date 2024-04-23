@@ -48,6 +48,8 @@ __all__ = [
     "hard_diff_round",
 ]
 
+DEBUG = False
+
 
 def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     ## coeff: from high to low order coefficient, last one is constant
@@ -74,10 +76,11 @@ def mzi_out_diff_to_phase(x: Tensor) -> Tensor:
     The power difference on two output ports, i.e., out_diff = out1 - out2, converted to the internal arm phase difference (delta_phi)
     delta_phi \in [-pi/2, pi/2], if delta_phi > 0, heat up upper arm phase shifter; if delta_phi < 0, heat up lower arm phase shifter
     out_diff \in [-1, 1] ideally with infinite extinction ratio.
-    out1 = 0.5(1+sin(delta_phi))
-    out2 = 0.5(1-sin(delta_phi))
-    out_diff = out1-out2=sin(delta_phi)
+    out1 = 0.5(1-sin(delta_phi))
+    out2 = 0.5(1+sin(delta_phi))
+    out_diff = out1-out2=-sin(delta_phi)
     delta_phi = arcsin(out_diff), need to make sure delta_phi is in the range of [-pi/2, pi/2]
+    phase shifter: exp(-jdelta_phi), delta_phi is phase lag.
 
     Args:
         x (Tensor): output port power difference of the 1x2 MZI
@@ -86,7 +89,7 @@ def mzi_out_diff_to_phase(x: Tensor) -> Tensor:
         Tensor: delta phi
     """
     return torch.asin(
-        x.clamp(-1, 1)
+        -x.clamp(-1, 1)
     )  # this clamp is for safety, as the input x may not be exactly in [-1, 1]
 
 
@@ -95,9 +98,9 @@ def mzi_phase_to_out_diff(x: Tensor) -> Tensor:
     The internal arm phase difference (delta_phi) converted to the power difference on two output ports, i.e., out_diff = out1 - out2
     delta_phi \in [-pi/2, pi/2], if delta_phi > 0, heat up upper arm phase shifter; if delta_phi < 0, heat up lower arm phase shifter
     out_diff \in [-1, 1] ideally with infinite extinction ratio.
-    out1 = 0.5(1+sin(delta_phi))
-    out2 = 0.5(1-sin(delta_phi))
-    out_diff = out1-out2=sin(delta_phi)
+    out1 = 0.5(1-sin(delta_phi))
+    out2 = 0.5(1+sin(delta_phi))
+    out_diff = out1-out2=-sin(delta_phi)
 
     Args:
         x (Tensor): delta phi
@@ -105,7 +108,7 @@ def mzi_phase_to_out_diff(x: Tensor) -> Tensor:
     Returns:
         Tensor: output port power difference of the 1x2 MZI
     """
-    return torch.sin(x)
+    return -torch.sin(x)
 
 
 class PhaseVariationScheduler(object):
@@ -519,14 +522,17 @@ class CrosstalkScheduler(object):
     def __init__(
         self,
         crosstalk_coupling_factor: Tuple[float, ...] = [
-            2.90822693e-06,
-            -1.53430272e-04,
-            2.68998271e-03,
-            -1.29270421e-02,
-            -1.04655916e-01,
+            3.31603839e-07,
+            -1.39558126e-05,
+            -4.84365615e-05,
+            1.03081137e-02,
+            -1.77423805e-01,
             1,
-        ],  # y=max(0, p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6)
-        crosstalk_exp_coupling_factor: float = 0.21474366,  # exp(-a*x)
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor: float = [
+            0.20046825,
+            -0.12407693,
+        ],  # a * exp(b*x)
         interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
         interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
         interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
@@ -537,11 +543,22 @@ class CrosstalkScheduler(object):
             crosstalk_coupling_factor, device=device
         )
         self.crosstalk_exp_coupling_factor = crosstalk_exp_coupling_factor
-        self.interv_h = interv_h
-        self.interv_v = interv_v
-        self.interv_s = interv_s
+        self.set_spacing(interv_h, interv_v, interv_s)
         self.device = device
         self.crosstalk_matrix = None
+
+    def set_spacing(
+        self,
+        interv_h: None | float = None,
+        interv_v: None | float = None,
+        interv_s: None | float = None,
+    ) -> None:
+        self.interv_h = interv_h or self.interv_h
+        self.interv_v = interv_v or self.interv_v
+        self.interv_s = interv_s or self.interv_s
+        assert (
+            self.interv_h >= self.interv_s
+        ), f"Horizontal spacing ({self.interv_h}) should be larger than the spacing between two arms of an MZI ({self.interv_s})"
 
     def get_crosstalk_matrix(self, phase) -> Tensor:
         """Generate the crosstalk coupling matrix Gamma given the array size
@@ -575,12 +592,25 @@ class CrosstalkScheduler(object):
     def _get_crosstalk_gamma(
         self, distance: Tensor, crosstalk_coupling_factor: Tensor
     ) -> Tensor:
-        ## less than 20 um, polynomial is more accurate, higher than 20 um, exp is more accurate
+        ## less than 23 um, polynomial is more accurate, higher than 20 um, exp is more accurate
         gamma = torch.where(
-            distance < 20,
+            distance < 23,
             polynomial(distance, crosstalk_coupling_factor),
-            torch.exp(-self.crosstalk_exp_coupling_factor * distance),
+            self.crosstalk_exp_coupling_factor[0]
+            * torch.exp(self.crosstalk_exp_coupling_factor[1] * distance),
         )
+        if DEBUG:
+            mask = (distance < 23) & (distance > 10)
+            distance = distance[mask]
+            gammav = gamma[mask]
+            gammav, indices = gammav.sort(descending=True)
+            distance = distance[indices]
+            print(self.interv_h)
+            # print(distance)
+            print(distance[:6])
+            print(gammav[:6])
+        # print(crosstalk_coupling_factor)
+        # print(polynomial(torch.tensor([8,9,10,11,12,19,20,23.], device=mask.device), crosstalk_coupling_factor))
         return gamma
 
     def _get_crosstalk_matrix(
@@ -594,8 +624,8 @@ class CrosstalkScheduler(object):
         X, Y = X.flatten(), Y.flatten()
 
         mask = phase.data.flatten(-2, -1).unsqueeze(-2) < 0
-        X_distance = X.unsqueeze(1).sub(X.unsqueeze(0)).mul_(interv_h)  # [k1*k2, k1*k2]
-        Y_distance_sq = Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2)
+        X_distance = X.unsqueeze(0).sub(X.unsqueeze(1)).mul_(interv_h)  # [k1*k2, k1*k2]
+        Y_distance_sq = Y.unsqueeze(0).sub(Y.unsqueeze(1)).square_().mul_(interv_v**2)
         distance_upper = (
             X_distance.sub(interv_s * mask)  # [..., k1*k2,k1*k2]
             .square_()
@@ -612,6 +642,7 @@ class CrosstalkScheduler(object):
             distance_upper, crosstalk_coupling_factor
         ).sub_(self._get_crosstalk_gamma(distance_lower, crosstalk_coupling_factor))
         self.crosstalk_matrix[..., torch.arange(k1 * k2), torch.arange(k1 * k2)] = 1.0
+
         return self.crosstalk_matrix
 
     def apply_crosstalk(self, phase: Tensor, crosstalk_matrix: Tensor) -> Tensor:
