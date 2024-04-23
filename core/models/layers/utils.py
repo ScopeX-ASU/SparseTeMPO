@@ -703,8 +703,8 @@ class CrosstalkScheduler(object):
         ## MZI center to center distance, can be positive or negative
         ## positive means aggressor is to the right of the victim (left/right layout)
         center_dist = (
-            active_indices.unsqueeze(1)
-            .sub(active_indices.unsqueeze(0))  # [k1*k2, k1*k2]
+            active_indices.unsqueeze(0)
+            .sub(active_indices.unsqueeze(1))  # [k1*k2, k1*k2]
             .float()
             .mul_(node_spacing)
         )
