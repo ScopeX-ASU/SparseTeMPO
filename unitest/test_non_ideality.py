@@ -15,7 +15,7 @@ from core.models.layers.tempo_conv2d import TeMPOBlockConv2d
 from core.models.layers.tempo_linear import TeMPOBlockLinear
 from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
 from core.utils import get_parameter_group, register_hidden_hooks
-
+from pyutils.plot import batch_plot
 
 def test_mode_switch():
     device = "cuda:0"
@@ -42,12 +42,12 @@ def test_crosstalk():
             1,
         ],
         interv_h=25,
-        interv_v=120,
+        interv_v=1200,
         interv_s=10,
         device=device,
     )
     layer.crosstalk_scheduler = crosstalk_scheduler
-    layer.weight.data.fill_(-1)
+    # layer.weight.data.fill_(-1)
     weight = layer.build_weight(enable_noise=False, enable_ste=True)
     phase, _ = layer.build_phase_from_weight(weight.data)
     phase = phase.clone()
@@ -55,11 +55,12 @@ def test_crosstalk():
     weight_nmaes = []
     phase_nmaes = []
     layer.set_crosstalk_noise(True)
-    for interv_h in range(10, 41):
+    for interv_h in range(16, 41):
         layer.crosstalk_scheduler.set_spacing(interv_h=interv_h)
         weight_noisy = layer.build_weight(enable_noise=True, enable_ste=True)
-        print(weight_noisy)
         phase_noisy = layer.noisy_phase.clone()
+        print(phase_noisy)
+        print(phase)
 
         weight_nmae = torch.norm(weight_noisy - weight, p=1) / weight.norm(1)
         phase_nmae = torch.norm(phase_noisy - phase, p=1) / phase.norm(1)
@@ -67,13 +68,14 @@ def test_crosstalk():
         phase_nmaes.append(phase_nmae.item())
         print(f"interv_h: {interv_h}, N-MAE: weight={weight_nmae:.5f} phase={phase_nmae:.5f}")
     fig, axes = plt.subplots(2, 1, figsize=(6, 8))
-    axes[0].plot(range(10, 41), weight_nmaes)
+    axes[0].plot(range(16, 41), weight_nmaes)
     axes[0].set_xlabel("interv_h (um)")
     axes[0].set_ylabel("Weight N-MAE")
-    axes[1].plot(range(10, 41), phase_nmaes)
+    axes[1].plot(range(16, 41), phase_nmaes)
     axes[1].set_xlabel("interv_h (um)")
     axes[1].set_ylabel("Phase N-MAE")
     plt.savefig("./unitest/figs/crosstalk_interv_h.png", dpi=300)
+
 
     # crosstalk_scheduler.interv_h = 15   
     # for i in range(2):

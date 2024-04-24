@@ -1,19 +1,23 @@
-from pyparsing import line
-import torchvision
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from pyutils.plot import batch_plot, pdf_crop
-from sklearn.manifold import TSNE
-import numpy as np
-import torch
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torchvision
 from matplotlib.ticker import NullFormatter
-from pyutils.plot import set_axes_size_ratio, set_ms
+from pyparsing import line
+from pyutils.config import configs
 from pyutils.general import ensure_dir
+from pyutils.plot import batch_plot, pdf_crop, set_axes_size_ratio, set_ms
+from sklearn.manifold import TSNE
 
+from core import builder
+from core.models.dst import MultiMask
+from core.models.layers.tempo_conv2d import TeMPOBlockConv2d
+from core.models.layers.tempo_linear import TeMPOBlockLinear
+from core.models.layers.utils import CrosstalkScheduler
+from core.utils import get_parameter_group, register_hidden_hooks
 
+set_ms()
 color_dict = {
     "black": "#000000",
     "red": "#de425b",  # red
@@ -39,17 +43,17 @@ def plot_sparsity(sp_mode, sa_mode):
     accs = data[:, 3::4].T
     sparsitys = np.arange(0.1, 1.01, 0.1)
     print(accs.shape, sparsitys.shape)
-    
+
     fig, ax = plt.subplots(1, 1)
 
     name = f"{sp_mode}_{sa_mode}"
     ensure_dir(f"./figures/sparsity")
     # cmap = mpl.colormaps['viridis'].resampled(8)
-    cmap = mpl.colormaps['coolwarm'].resampled(8)
+    cmap = mpl.colormaps["coolwarm"].resampled(8)
     for i, (cycle, acc, sparsity) in enumerate(zip(cycles, accs, sparsitys)):
         fig, ax, _ = batch_plot(
             "line",
-            raw_data={"x": cycle/1000, "y": acc},
+            raw_data={"x": cycle / 1000, "y": acc},
             name=name,
             xlabel="Cycles (K)",
             ylabel="Test Acc (%)",
@@ -69,11 +73,12 @@ def plot_sparsity(sp_mode, sa_mode):
             linestyle="-",
             ieee=True,
         )
-    
+
         set_axes_size_ratio(0.4, 0.5, fig, ax)
-        
+
         plt.savefig(f"./figures/sparsity/{name}.png", dpi=300)
         plt.savefig(f"./figures/sparsity/{name}.pdf", dpi=300)
+
 
 def plot_lowrank_scanning2d_resnet():
     fig, ax = None, None
@@ -122,8 +127,126 @@ def plot_lowrank_scanning2d_resnet():
     fig.savefig(f"{name}.png")
     fig.savefig(f"{name}.pdf")
 
-for sp_mode in ["uniform", "topk", "IS"]:
-    for sa_mode in ["first_grad", "second_grad"]:
-        plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
 
 # plot_lowrank_scanning2d_resnet()
+
+
+def plot_crosstalk():
+    device = "cuda:0"
+    layer = TeMPOBlockLinear(8000, 8, miniblock=[1, 1, 8, 8], device=device)
+    crosstalk_scheduler = CrosstalkScheduler(
+        crosstalk_coupling_factor=[
+            3.31603839e-07,
+            -1.39558126e-05,
+            -4.84365615e-05,
+            1.03081137e-02,
+            -1.77423805e-01,
+            1,
+        ],
+        interv_h=25,
+        interv_v=1200,
+        interv_s=10,
+        device=device,
+    )
+    layer.crosstalk_scheduler = crosstalk_scheduler
+    # layer.weight.data.fill_(-1)
+    weight = layer.build_weight(enable_noise=False, enable_ste=True).detach()
+    phase, _ = layer.build_phase_from_weight(weight.data)
+    phase = phase.clone()
+
+    weight_nmaes_mean = []
+    weight_nmaes_std = []
+    phase_nmaes_mean = []
+    phase_nmaes_std = []
+    layer.set_crosstalk_noise(True)
+    with torch.no_grad():
+        for interv_h in range(16, 41):
+            layer.crosstalk_scheduler.set_spacing(interv_h=interv_h)
+            weight_noisy = layer.build_weight(
+                enable_noise=True, enable_ste=True
+            ).detach()
+            phase_noisy = layer.noisy_phase
+            print(phase_noisy[0, 0, 0, 0])
+            print(phase[0, 0, 0, 0])
+
+            weight_nmae = torch.norm(
+                weight_noisy - weight, p=2, dim=(-2, -1)
+            ) / weight.norm(1, dim=(-2, -1))
+            phase_nmae = torch.norm(
+                phase_noisy - phase, p=1, dim=(-2, -1)
+            ) / phase.norm(1, dim=(-2, -1))
+            weight_nmaes_mean.append(weight_nmae.mean().item())
+            weight_nmaes_std.append(weight_nmae.std().item())
+            phase_nmaes_mean.append(phase_nmae.mean().item())
+            phase_nmaes_std.append(phase_nmae.mean().item())
+            print(
+                f"interv_h: {interv_h}, N-MAE: weight={weight_nmae.mean().item():.5f} phase={phase_nmae.mean().item():.5f}"
+            )
+    fig, ax = None, None
+
+    name = "CrosstalkNMAE"
+    fig, ax, _ = batch_plot(
+        "errorbar",
+        raw_data={
+            "x": np.arange(16, 41),
+            "y": weight_nmaes_mean,
+            "yerror": weight_nmaes_std,
+        },
+        name=name,
+        xlabel="lh (um)",
+        ylabel="N-MAE",
+        fig=fig,
+        ax=ax,
+        xrange=[16, 41.1, 10],
+        xlimit=[15, 41],
+        yrange=[0, 0.35, 0.1],
+        xformat="%.0f",
+        yformat="%.1f",
+        figscale=[0.65, 0.65 * 9.1 / 8],
+        fontsize=10,
+        linewidth=1,
+        gridwidth=0.5,
+        ieee=True,
+        trace_label="Weight",
+        trace_color=color_dict["blue"],
+        legend=True,
+    )
+
+    fig, ax, _ = batch_plot(
+        "errorbar",
+        raw_data={
+            "x": np.arange(16, 41),
+            "y": phase_nmaes_mean,
+            "yerror": phase_nmaes_std,
+        },
+        name=name,
+        xlabel="lh (um)",
+        ylabel="N-MAE",
+        fig=fig,
+        ax=ax,
+        xrange=[16, 41.1, 10],
+        xlimit=[15, 41],
+        yrange=[0, 0.35, 0.1],
+        xformat="%.0f",
+        yformat="%.1f",
+        figscale=[0.65, 0.65 * 9.1 / 8],
+        fontsize=10,
+        linewidth=1,
+        gridwidth=0.5,
+        ieee=True,
+        trace_label="Phase",
+        trace_color=color_dict["mitred"],
+        legend=True,
+    )
+    set_ms()
+    ensure_dir(f"./figs")
+    fig.savefig(f"./figs/{name}.png")
+    fig.savefig(f"./figs/{name}.pdf")
+    pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
+
+
+if __name__ == "__main__":
+    # for sp_mode in ["uniform", "topk", "IS"]:
+    #     for sa_mode in ["first_grad", "second_grad"]:
+    #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
+    plot_crosstalk()

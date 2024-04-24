@@ -1,7 +1,7 @@
 '''
 Date: 2024-04-23 02:19:26
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-04-23 02:19:26
+LastEditTime: 2024-04-23 13:27:01
 FilePath: /SparseTeMPO/unitest/test_crosstalk_fit.py
 '''
 """
@@ -83,8 +83,10 @@ def func(x, popt_poly, popt_exp):
 
 
 xdata1 = np.linspace(0, 30, 100)
-plt.plot(xdata1, func(xdata1, popt_poly, popt_exp), "b-", label="data")
-plt.plot(xdata, ydata, "ro", label="data")
+fig, ax = plt.subplots(1, 1, figsize=(3,2.5))
+ax.plot(xdata1, func(xdata1, popt_poly, popt_exp), "b-", label="data")
+ax.plot(xdata, ydata, "ro", label="data")
+print("here")
 plt.savefig("./unitest/figs/crosstalk_fit.png", dpi=300)
 
 

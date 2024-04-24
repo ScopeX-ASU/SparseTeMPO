@@ -54,6 +54,7 @@ DEBUG = False
 def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     ## coeff: from high to low order coefficient, last one is constant
     ## e.g., [p5, p4, p3, p2, p1, p0] -> p5*x^5 + p4*x^4 + p3*x^3 + p2*x^2 + p1*x + p0
+    print(x.shape)
     x = torch.stack([x.pow(i) for i in range(coeff.size(0) - 1, 0, -1)], dim=-1)
     out = x.matmul(coeff[:-1]).add_(coeff[-1])
     return out
@@ -536,12 +537,14 @@ class CrosstalkScheduler(object):
         interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
         interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
         interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
+        ps_width: float = 6,  # phase shifter width (unit: um)
         device="cuda:0",
     ) -> None:
         super().__init__()
         self.crosstalk_coupling_factor = torch.tensor(
             crosstalk_coupling_factor, device=device
         )
+        self.ps_width = ps_width
         self.crosstalk_exp_coupling_factor = crosstalk_exp_coupling_factor
         self.set_spacing(interv_h, interv_v, interv_s)
         self.device = device
@@ -557,8 +560,8 @@ class CrosstalkScheduler(object):
         self.interv_v = interv_v or self.interv_v
         self.interv_s = interv_s or self.interv_s
         assert (
-            self.interv_h >= self.interv_s
-        ), f"Horizontal spacing ({self.interv_h}) should be larger than the spacing between two arms of an MZI ({self.interv_s})"
+            self.interv_h >= self.interv_s + self.ps_width
+        ), f"Horizontal spacing ({self.interv_h}) should be larger than the width of an MZI ({self.interv_s}+{self.ps_width}={self.interv_s+self.ps_width})"
 
     def get_crosstalk_matrix(self, phase) -> Tensor:
         """Generate the crosstalk coupling matrix Gamma given the array size
@@ -673,12 +676,9 @@ class CrosstalkScheduler(object):
         flat_phase_abs = flat_phase.abs()[..., None].expand(
             [-1] * flat_phase.dim() + [flat_phase.shape[-1]]
         )
-        # print(flat_phase_abs.shape)
-        flat_phase_abs[
-            ...,
-            torch.arange(flat_phase_abs.shape[-2]),
-            torch.arange(flat_phase_abs.shape[-1]),
-        ] = flat_phase
+
+        flat_phase_abs = torch.diagonal_scatter(flat_phase_abs, flat_phase, 0, -2, -1)
+
         ## then we need batched vector inner product
         return torch.einsum("...ij,...ji->...i", crosstalk_matrix, flat_phase_abs).view(
             phase_shape
