@@ -12,7 +12,7 @@ scheduler:
   lr_min: 0.00002
 
 run:
-  experiment: "cifar10_resnet20_sparse_train"
+  experiment: "fmnist_cnn_train"
   n_epochs: 100
   batch_size: 32
   use_cuda: 1
@@ -35,13 +35,41 @@ noise:
 
 checkpoint:
   save_best_model_k: 3
-  checkpoint_dir: "cifar10/resnet20/sparse_train"
+  checkpoint_dir: "fmnist/cnn/train"
   model_comment: ""
   resume: 0
   restore_checkpoint : ""
 
 model:
-  name: "TeMPO_ResNet20"
+  name: "TeMPO_CNN"
+  conv_cfg:
+    type: TeMPOBlockConv2d
+    mode: "weight"
+    miniblock: [1, 1, 8, 8]
+    w_bit: 32
+    in_bit: 32
+  # conv_cfg:
+  #   type: Conv2d
+  linear_cfg:
+    type: TeMPOBlockLinear
+    mode: "weight"
+    miniblock: [1, 1, 8, 8]
+    w_bit: 32
+    in_bit: 32
+  # linear_cfg:
+  #   type: Linear
+  norm_cfg:
+    type: BN2d
+    affine: True
+  act_cfg:
+    type: ReLU
+    inplace: True
+  kernel_list: [64, 64, 64]
+  kernel_size_list: [4, 4, 4]
+  hidden_list: []
+  stride_list: [1, 2, 1]
+  padding_list: [1, 1, 1]
+  pool_out_size: 5
 
 debug:
   verboise: 1
