@@ -38,12 +38,12 @@ def test_DST_scheduler(pruning_type="structure_row", death_mode="magnitude", gro
     configs.dst_scheduler.pruning_type = pruning_type
     configs.dst_scheduler.death_mode = death_mode
     configs.dst_scheduler.growth_mode = growth_mode
-    
     dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
-    print("This is the power:", dst_scheduler.cal_ports_power(torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1]])))
+    
+    # print("This is the power:", dst_scheduler.cal_ports_power(torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1]])))
     dst_scheduler.set_magnitude_based_flag(False)
     dst_scheduler.set_gradient_based_flag(False)
-    print(dst_scheduler)
+    # print(dst_scheduler)
     dst_scheduler.apply_mask()
     x = torch.randn(1, 16, 8, 8, device=device)
     y = model(x)
