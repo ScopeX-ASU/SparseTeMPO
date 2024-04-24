@@ -17,7 +17,8 @@ dataset = "fmnist"
 model = "cnn"
 root = f"log/{dataset}/{model}"
 script = "train.py"
-config_file = f"configs/{dataset}/{model}/train/train.yml"
+file_id = "sparse_train_64_4_[4, 4, 8, 8]row"
+config_file = f"configs/{dataset}/{model}/train/{file_id}.yml"
 configs.load(config_file, recursive=True)
 
 
@@ -32,7 +33,7 @@ def task_launcher(args):
     ) as wfid:
         exp = [
             f"--optimizer.lr={lr}",
-            f"--run.random_state={41+id}",
+            f"--run.random_state={42}",
             f"--model.conv_cfg.w_bit={w_bit}",
             f"--model.linear_cfg.w_bit={w_bit}",
             f"--model.conv_cfg.in_bit={in_bit}",
@@ -49,8 +50,8 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (1, 8, 8, 1),
+        (1, 8, 8, 3),
     ]
-    with Pool(1) as p:
+    with Pool(4) as p:
         p.map(task_launcher, tasks)
     logger.info(f"Exp: {configs.run.experiment} Done.")
