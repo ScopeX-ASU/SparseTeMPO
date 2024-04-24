@@ -242,11 +242,8 @@ class DSTScheduler2(nn.Module):
         update_frequency: int = 100,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
+        splitter_biases: float | List[int] = 90,
         max_combinations: int = 100,  # set a maximum combinations to enumerate. otherwise it might have too many combinations
-        node_spacing: Tuple[float, float] = (
-            20,
-            100,
-        ),  # row spacing and col spacing in weight matrix, (um)
         device="cuda:0",
     ) -> None:
         ## Dynamic Sparse Training Scheduler
@@ -286,9 +283,7 @@ class DSTScheduler2(nn.Module):
         self.T_max = T_max
         self.group = group
         self.max_combinations = max_combinations
-        self.node_spacing = node_spacing
         self.first_layer_pruning = first_layer_pruning
-
         self.steps = 0
         self.device = device
 
@@ -325,6 +320,8 @@ class DSTScheduler2(nn.Module):
         self.ADC_power = ADC_power
         self.TIA_power = TIA_power
         self.HDAC_power = HDAC_power
+
+        self.set_splitter_bias(biases=splitter_biases)
 
         # stats
         self.name2zeros = {}
@@ -489,6 +486,12 @@ class DSTScheduler2(nn.Module):
     def set_gradient_based_flag(self, flag: bool = False) -> None:
         self.gradient_based_flag = flag
 
+    def set_splitter_bias(self, biases: float | List[int] = 90) -> None:
+        ## cos^2((delta_phi + bias)/2) = ratio
+        if isinstance(biases, (int, float)):
+            biases = [biases] * int(np.log2(self.modules[0].conv_cfg["miniblock"][-1]))
+        self.splitter_biases = [b / 180 * np.pi for b in biases]
+
     def cal_ports_power(self, ports_array: Tensor) -> Tensor:
         ## ports_array: [#combinations, array_length] bool mask representing the sparsity pattern
         ## return: [#combinations] power of each sparsity pattern
@@ -518,22 +521,36 @@ class DSTScheduler2(nn.Module):
             ## note that if the ratio is inf, i.e., two port of MZI are all 0
             ## then its ratio should be set to 50% to minimize power.
             ratios[torch.isnan(ratios)] = 0.5
+            # print(ratios)
 
             ## L0: [..., <2>]       sum[-1],
             ## L1: [..., <2, 2>]    sum[-2, -1],
             ## L2: [..., <2, 2, 2>] sum[-3, -2, -1],
             sum_dims = list(range(-1 - level, 0, 1))
             ## cos^2((delta_phi + pi/2)/2) = ratio
+            ## (1-sin(delta_phi))/2 = ratio
             ## |delta_phi| = |arccos(sqrt(ratio)) * 2 - pi/2|
+            # delta_phi = (ratios.sqrt_()
+            #     .acos()
+            #     .mul_(2)
+            #     .sub_(np.pi / 2))
+            # print(delta_phi)
             p = (
                 ratios.sqrt_()
                 .acos()
                 .mul_(2)
-                .sub_(np.pi / 2)
+                .sub_(self.splitter_biases[level])
                 .abs_()
                 .mul_(self.pi_shift_power / np.pi)
                 .sum(dim=sum_dims)
             )  # [#combinations]
+            # p = (
+            #     ratios.mul_(-2).add_(1)
+            #     .asin_()
+            #     .abs_()
+            #     .mul_(self.pi_shift_power / np.pi)
+            #     .sum(dim=sum_dims)
+            # )  # [#combinations]
             # print("ratio", ratios)
             # print("p", p)
             power += p
@@ -663,7 +680,9 @@ class DSTScheduler2(nn.Module):
 
     #     return {key: value for key, value in sorted(power_dict.items())}
 
-    def find_least_crosstalk_patterns(self, masks: Tensor, is_col: bool=True) -> Tuple[Tensor, float]:
+    def find_least_crosstalk_patterns(
+        self, masks: Tensor, is_col: bool = True
+    ) -> Tuple[Tensor, float]:
         ## among the possible patterns with min power, find the one with least crosstalk
         ## masks: [#combinations, array_length]
         ## best_patterns [#num, array_length], best_score: float
@@ -693,35 +712,37 @@ class DSTScheduler2(nn.Module):
     def calc_crosstalk_score(self, mask: Tensor, is_col: bool = True) -> float:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
-        active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
-        num_active = active_indices.numel()
-        if num_active < 2:
-            # Not enough active elements to calc separation or density.
-            # should be higher than the best case with two actives
-            ## treated as 2 actives with distance of k
-            active_indices = torch.tensor([0, mask.shape[0]])
-            num_active = 2
+        # active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
+        # num_active = active_indices.numel()
+        # if num_active < 2:
+        #     # Not enough active elements to calc separation or density.
+        #     # should be higher than the best case with two actives
+        #     ## treated as 2 actives with distance of k
+        #     active_indices = torch.tensor([0, mask.shape[0]])
+        #     num_active = 2
 
-        # calc distances between consecutive active elements
+        # # calc distances between consecutive active elements
 
-        dist = (
-            active_indices[None, ...] - active_indices[..., None]
-        ).float().abs() * self.node_spacing[int(is_col)]
-        total_crosstalk = torch.exp(-0.1 * dist).sum().item() - num_active
+        # dist = (
+        #     active_indices[None, ...] - active_indices[..., None]
+        # ).float().abs() * self.node_spacing[int(is_col)]
+        # total_crosstalk = torch.exp(-0.1 * dist).sum().item() - num_active
 
-        return -total_crosstalk
+        # return -total_crosstalk
+        return self.modules[0].crosstalk_scheduler.calc_crosstalk_score(mask, is_col)
 
-    def calc_crosstalk_scores(self, mask: Tensor, is_col: bool = True) -> Tensor:
+    def calc_crosstalk_scores(self, masks: Tensor, is_col: bool = True) -> Tensor:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
         ## mask: [num_combinations, array_length]
         ## return: [num_combinations]
-        shape = mask.shape[:-1]
-        mask = mask.flatten(0, -2)
-        total_crosstalk = []
-        for m in mask:
-            total_crosstalk.append(self.calc_crosstalk_score(m, is_col))
-        return torch.tensor(total_crosstalk, device=self.device).view(shape)
+        # shape = mask.shape[:-1]
+        # mask = mask.flatten(0, -2)
+        # total_crosstalk = []
+        # for m in mask:
+        #     total_crosstalk.append(self.calc_crosstalk_score(m, is_col))
+        # return torch.tensor(total_crosstalk, device=self.device).view(shape)
+        return self.modules[0].crosstalk_scheduler.calc_crosstalk_scores(masks, is_col)
 
     def calc_TIA_ADC_powers(self, mask: Tensor) -> Tensor:
         ## given a sparsity mask, find its corresponding TIA and ADC power, please provide row mask only
@@ -730,8 +751,12 @@ class DSTScheduler2(nn.Module):
         total_power = []
         for m in mask:
             array_length = m.shape[0]
-            empty_rows = m.sum(-1).item()
-            total_power.append(self.calc_TIA_ADC_power(array_length, empty_rows, self.TIA_power, self.ADC_power))
+            empty_rows = m.sum(-1)
+            total_power.append(
+                self.calc_TIA_ADC_power(
+                    array_length, empty_rows, self.TIA_power, self.ADC_power
+                )
+            )
         print(total_power)
         return torch.tensor(total_power, device=self.device).view(shape)
 
@@ -742,8 +767,10 @@ class DSTScheduler2(nn.Module):
         total_power = []
         for m in mask:
             array_length = m.shape[0]
-            empty_cols = m.sum(-1).item()
-            total_power.append(self.calc_HDAC_power(array_length, empty_cols, self.HDAC_power))
+            empty_cols = m.sum(-1)
+            total_power.append(
+                self.calc_HDAC_power(array_length, empty_cols, self.HDAC_power)
+            )
         return torch.tensor(total_power, device=self.device).view(shape)
 
     def calc_TIA_ADC_power(
@@ -966,7 +993,9 @@ class DSTScheduler2(nn.Module):
                 )  # [#combinations, col_num]
                 for opt in opts:
                     if opt == "crosstalk":
-                        patterns, _ = self.find_least_crosstalk_patterns(patterns, is_col=False)
+                        patterns, _ = self.find_least_crosstalk_patterns(
+                            patterns, is_col=False
+                        )
                 mask["row_mask"][..., :, 0] = patterns[0]
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
@@ -986,7 +1015,9 @@ class DSTScheduler2(nn.Module):
                         if DEBUG:
                             print(f"after power opt", patterns.shape, patterns)
                     elif opt == "crosstalk":
-                        patterns, _ = self.find_least_crosstalk_patterns(patterns, is_col=True)
+                        patterns, _ = self.find_least_crosstalk_patterns(
+                            patterns, is_col=True
+                        )
                     else:
                         raise NotImplementedError
                 mask["col_mask"][..., :] = patterns[0]
@@ -1026,10 +1057,14 @@ class DSTScheduler2(nn.Module):
                             )
                         elif opt == "crosstalk":
                             col_patterns, col_crosstalk = (
-                                self.find_least_crosstalk_patterns(col_patterns, is_col=True)
+                                self.find_least_crosstalk_patterns(
+                                    col_patterns, is_col=True
+                                )
                             )
                             row_patterns, row_crosstalk = (
-                                self.find_least_crosstalk_patterns(row_patterns, is_col=False)
+                                self.find_least_crosstalk_patterns(
+                                    row_patterns, is_col=False
+                                )
                             )
 
                             score["crosstalk"] = row_crosstalk
@@ -1338,10 +1373,10 @@ class DSTScheduler2(nn.Module):
     def row_col_magnitude_death(
         self, mask: MultiMask, weight: Tensor, name: str
     ) -> MultiMask:
-         # mask here is row mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
+        # mask here is row mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
         if mask.num_nonzeros() == mask.numel():
             return mask
-        
+
         death_rate = self.name2death_rate[name]
         num_remove = math.ceil(death_rate * self.name2nonzeros[name])
 
@@ -1481,10 +1516,10 @@ class DSTScheduler2(nn.Module):
         )
 
         return new_mask
-    
+
     def row_col_gradient_growth(
         self, name: str, new_mask: MultiMask, total_regrowth: int, weight: Tensor
-    ) -> MultiMask:   
+    ) -> MultiMask:
         if total_regrowth == 0:
             return new_mask
         grad = self.get_gradient_for_weights(weight)
@@ -1740,8 +1775,12 @@ class DSTScheduler2(nn.Module):
                 ## affected_mask_indices: [(p, q, c), (p,q,c), ..., (p,q,c)]
                 if opt == "crosstalk":
                     gain = sum(
-                        self.calc_crosstalk_score(col_mask[p, q, 0, c, 0, :], is_col=True)
-                        - self.calc_crosstalk_score(mask["col_mask"][p, q, 0, c, 0, :], is_col=True)
+                        self.calc_crosstalk_score(
+                            col_mask[p, q, 0, c, 0, :], is_col=True
+                        )
+                        - self.calc_crosstalk_score(
+                            mask["col_mask"][p, q, 0, c, 0, :], is_col=True
+                        )
                         for (p, q, c) in affected_mask_indices
                     )
                 elif opt == "power":
@@ -1999,14 +2038,14 @@ class DSTScheduler2(nn.Module):
 
 
     def row_col_magnitude_select(
-        self, 
-        mask: MultiMask, 
-        weight: Tensor, 
-        name: str, 
-        death: bool = True, 
-        num_select: int = 0, 
+        self,
+        mask: MultiMask,
+        weight: Tensor,
+        name: str,
+        death: bool = True,
+        num_select: int = 0,
     ) -> MultiMask:
-        
+
         p, q, r, c, k1, k2 = weight.shape
 
         if death:
@@ -2272,7 +2311,7 @@ class DSTScheduler2(nn.Module):
         #     if new_total_score > best_score:
         #         best_pattern = new_mask
 
-        # return best_pattern
+        return best_pattern
 
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
@@ -2383,10 +2422,10 @@ class DSTScheduler2(nn.Module):
             #     .sum()
             #     .item()
             # )
-            TIA_ADC_power = self.calc_TIA_ADC_powers(mask["row_mask"][..., 0]).sum().item()
+            TIA_ADC_power = (
+                self.calc_TIA_ADC_powers(mask["row_mask"][..., 0]).sum().item()
+            )
             HDAC_power = self.calc_HDAC_powers(mask["col_mask"][...]).sum().item()
-
-
 
             powers[name] = {
                 "switch_power": switch_power,
@@ -2404,7 +2443,9 @@ class DSTScheduler2(nn.Module):
 
             crosstalk = (
                 self.calc_crosstalk_scores(mask["col_mask"], is_col=True).sum().item()
-                + self.calc_crosstalk_scores(mask["row_mask"][..., 0], is_col=False).sum().item()
+                + self.calc_crosstalk_scores(mask["row_mask"][..., 0], is_col=False)
+                .sum()
+                .item()
             )
             crosstalks[name] = crosstalk
             total_crosstalk += crosstalk

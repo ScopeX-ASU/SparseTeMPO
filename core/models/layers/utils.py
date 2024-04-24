@@ -44,9 +44,19 @@ __all__ = [
     "calculate_grad_hessian",
     "merge_chunks",
     "partition_chunks",
-    "pad_quantize_fn", 
+    "pad_quantize_fn",
     "hard_diff_round",
 ]
+
+DEBUG = False
+
+
+def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
+    ## coeff: from high to low order coefficient, last one is constant
+    ## e.g., [p5, p4, p3, p2, p1, p0] -> p5*x^5 + p4*x^4 + p3*x^3 + p2*x^2 + p1*x + p0
+    x = torch.stack([x.pow(i) for i in range(coeff.size(0) - 1, 0, -1)], dim=-1)
+    out = x.matmul(coeff[:-1]).add_(coeff[-1])
+    return out
 
 
 class STE(torch.autograd.Function):
@@ -66,10 +76,11 @@ def mzi_out_diff_to_phase(x: Tensor) -> Tensor:
     The power difference on two output ports, i.e., out_diff = out1 - out2, converted to the internal arm phase difference (delta_phi)
     delta_phi \in [-pi/2, pi/2], if delta_phi > 0, heat up upper arm phase shifter; if delta_phi < 0, heat up lower arm phase shifter
     out_diff \in [-1, 1] ideally with infinite extinction ratio.
-    out1 = 0.5(1+sin(delta_phi))
-    out2 = 0.5(1-sin(delta_phi))
-    out_diff = out1-out2=sin(delta_phi)
+    out1 = 0.5(1-sin(delta_phi))
+    out2 = 0.5(1+sin(delta_phi))
+    out_diff = out1-out2=-sin(delta_phi)
     delta_phi = arcsin(out_diff), need to make sure delta_phi is in the range of [-pi/2, pi/2]
+    phase shifter: exp(-jdelta_phi), delta_phi is phase lag.
 
     Args:
         x (Tensor): output port power difference of the 1x2 MZI
@@ -78,7 +89,7 @@ def mzi_out_diff_to_phase(x: Tensor) -> Tensor:
         Tensor: delta phi
     """
     return torch.asin(
-        x.clamp(-1, 1)
+        -x.clamp(-1, 1)
     )  # this clamp is for safety, as the input x may not be exactly in [-1, 1]
 
 
@@ -87,9 +98,9 @@ def mzi_phase_to_out_diff(x: Tensor) -> Tensor:
     The internal arm phase difference (delta_phi) converted to the power difference on two output ports, i.e., out_diff = out1 - out2
     delta_phi \in [-pi/2, pi/2], if delta_phi > 0, heat up upper arm phase shifter; if delta_phi < 0, heat up lower arm phase shifter
     out_diff \in [-1, 1] ideally with infinite extinction ratio.
-    out1 = 0.5(1+sin(delta_phi))
-    out2 = 0.5(1-sin(delta_phi))
-    out_diff = out1-out2=sin(delta_phi)
+    out1 = 0.5(1-sin(delta_phi))
+    out2 = 0.5(1+sin(delta_phi))
+    out_diff = out1-out2=-sin(delta_phi)
 
     Args:
         x (Tensor): delta phi
@@ -97,7 +108,7 @@ def mzi_phase_to_out_diff(x: Tensor) -> Tensor:
     Returns:
         Tensor: output port power difference of the 1x2 MZI
     """
-    return torch.sin(x)
+    return -torch.sin(x)
 
 
 class PhaseVariationScheduler(object):
@@ -510,19 +521,44 @@ class GlobalTemperatureScheduler(object):
 class CrosstalkScheduler(object):
     def __init__(
         self,
-        crosstalk_coupling_factor: float = 0.05,  # parameter to control the crosstalk intensity
-        interv_h: float = 100.0,  # horizontal spacing (unit: um) between the center of two MZIs
-        interv_v: float = 100.0,  # vertical spacing (unit: um) between the center of two MZIs
-        interv_s: float = 15.0,  # horizontal spacing (unit: um) between two arms of an MZI
+        crosstalk_coupling_factor: Tuple[float, ...] = [
+            3.31603839e-07,
+            -1.39558126e-05,
+            -4.84365615e-05,
+            1.03081137e-02,
+            -1.77423805e-01,
+            1,
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor: float = [
+            0.20046825,
+            -0.12407693,
+        ],  # a * exp(b*x)
+        interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
+        interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
+        interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
         device="cuda:0",
     ) -> None:
         super().__init__()
-        self.crosstalk_coupling_factor = crosstalk_coupling_factor
-        self.interv_h = interv_h
-        self.interv_v = interv_v
-        self.interv_s = interv_s
+        self.crosstalk_coupling_factor = torch.tensor(
+            crosstalk_coupling_factor, device=device
+        )
+        self.crosstalk_exp_coupling_factor = crosstalk_exp_coupling_factor
+        self.set_spacing(interv_h, interv_v, interv_s)
         self.device = device
         self.crosstalk_matrix = None
+
+    def set_spacing(
+        self,
+        interv_h: None | float = None,
+        interv_v: None | float = None,
+        interv_s: None | float = None,
+    ) -> None:
+        self.interv_h = interv_h or self.interv_h
+        self.interv_v = interv_v or self.interv_v
+        self.interv_s = interv_s or self.interv_s
+        assert (
+            self.interv_h >= self.interv_s
+        ), f"Horizontal spacing ({self.interv_h}) should be larger than the spacing between two arms of an MZI ({self.interv_s})"
 
     def get_crosstalk_matrix(self, phase) -> Tensor:
         """Generate the crosstalk coupling matrix Gamma given the array size
@@ -553,6 +589,30 @@ class CrosstalkScheduler(object):
             self.interv_s,
         )
 
+    def _get_crosstalk_gamma(
+        self, distance: Tensor, crosstalk_coupling_factor: Tensor
+    ) -> Tensor:
+        ## less than 23 um, polynomial is more accurate, higher than 20 um, exp is more accurate
+        gamma = torch.where(
+            distance < 23,
+            polynomial(distance, crosstalk_coupling_factor),
+            self.crosstalk_exp_coupling_factor[0]
+            * torch.exp(self.crosstalk_exp_coupling_factor[1] * distance),
+        )
+        if DEBUG:
+            mask = (distance < 23) & (distance > 10)
+            distance = distance[mask]
+            gammav = gamma[mask]
+            gammav, indices = gammav.sort(descending=True)
+            distance = distance[indices]
+            print(self.interv_h)
+            # print(distance)
+            print(distance[:6])
+            print(gammav[:6])
+        # print(crosstalk_coupling_factor)
+        # print(polynomial(torch.tensor([8,9,10,11,12,19,20,23.], device=mask.device), crosstalk_coupling_factor))
+        return gamma
+
     def _get_crosstalk_matrix(
         self, crosstalk_coupling_factor, phase, interv_h, interv_v, interv_s
     ) -> Tensor:
@@ -561,32 +621,28 @@ class CrosstalkScheduler(object):
             torch.arange(k1, device=self.device, dtype=torch.float),
             torch.arange(k2, device=self.device, dtype=torch.float),
         )
-        print(X.shape, Y.shape)
         X, Y = X.flatten(), Y.flatten()
-        print(X.shape, Y.shape)
+
         mask = phase.data.flatten(-2, -1).unsqueeze(-2) < 0
+        X_distance = X.unsqueeze(0).sub(X.unsqueeze(1)).mul_(interv_h)  # [k1*k2, k1*k2]
+        Y_distance_sq = Y.unsqueeze(0).sub(Y.unsqueeze(1)).square_().mul_(interv_v**2)
         distance_upper = (
-            X.unsqueeze(1)
-            .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .sub(interv_s * mask)  # [..., k1*k2,k1*k2]
+            X_distance.sub(interv_s * mask)  # [..., k1*k2,k1*k2]
             .square_()
-            .mul_(interv_h**2)
-            .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
+            .add_(Y_distance_sq)
         ).sqrt_()
 
         distance_lower = (
-            X.unsqueeze(1)
-            .sub(X.unsqueeze(0))  # [k1*k2, k1*k2]
-            .add(interv_s * (~mask))  # [..., k1*k2,k1*k2]
+            X_distance.add(interv_s * (~mask))  # [..., k1*k2,k1*k2]
             .square_()
-            .mul_(interv_h**2)
-            .add_(Y.unsqueeze(1).sub(Y.unsqueeze(0)).square_().mul_(interv_v**2))
+            .add_(Y_distance_sq)
         ).sqrt_()
 
-        self.crosstalk_matrix = torch.exp(
-            distance_upper.mul_(-crosstalk_coupling_factor)
-        ).sub_(torch.exp(distance_lower.mul_(-crosstalk_coupling_factor)))
+        self.crosstalk_matrix = self._get_crosstalk_gamma(
+            distance_upper, crosstalk_coupling_factor
+        ).sub_(self._get_crosstalk_gamma(distance_lower, crosstalk_coupling_factor))
         self.crosstalk_matrix[..., torch.arange(k1 * k2), torch.arange(k1 * k2)] = 1.0
+
         return self.crosstalk_matrix
 
     def apply_crosstalk(self, phase: Tensor, crosstalk_matrix: Tensor) -> Tensor:
@@ -627,6 +683,62 @@ class CrosstalkScheduler(object):
         return torch.einsum("...ij,...ji->...i", crosstalk_matrix, flat_phase_abs).view(
             phase_shape
         )
+
+    def calc_crosstalk_score(self, mask: Tensor, is_col: bool = True) -> float:
+        ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
+        active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
+        num_active = active_indices.numel()
+        if num_active < 2:
+            # Not enough active elements to calc separation or density.
+            # should be higher than the best case with two actives
+            ## treated as 2 actives with distance of k
+            active_indices = torch.tensor([0, mask.shape[0]], device=mask.device)
+            num_active = 2
+
+        # calc distances between consecutive active elements
+
+        node_spacing = self.interv_v if is_col else self.interv_h
+
+        ## MZI center to center distance, can be positive or negative
+        ## positive means aggressor is to the right of the victim (left/right layout)
+        center_dist = (
+            active_indices.unsqueeze(0)
+            .sub(active_indices.unsqueeze(1))  # [k1*k2, k1*k2]
+            .float()
+            .mul_(node_spacing)
+        )
+        ## to estimate, aggressor MZI's center to victim's upper arm, can be positive or negative
+
+        distance_upper = (center_dist - self.interv_s / 2).abs()
+
+        ## to estimate, aggressor MZI's center to victim's lower arm, can be positive or negative
+        distance_lower = (center_dist + self.interv_s / 2).abs()
+
+        ## because we do not know the actual aggressor's phase, we do not know whether to include interv_s or not.
+        ## We use a rough estimation, here we overestimate the crosstalk.
+        total_crosstalk = self._get_crosstalk_gamma(
+            distance_upper, self.crosstalk_coupling_factor
+        ).sub_(
+            self._get_crosstalk_gamma(distance_lower, self.crosstalk_coupling_factor)
+        )
+        total_crosstalk[torch.arange(num_active), torch.arange(num_active)] = 0.0
+
+        ## column-wise sum, sum over all aggressors for each victim, positive/negative might cancel out
+        ## then accumulate the absolute crosstalk factors over all victims
+        ## '-' to make the score higher the better
+        return -total_crosstalk.sum(1).abs().sum().item()
+
+    def calc_crosstalk_scores(self, masks: Tensor, is_col: bool = True) -> Tensor:
+        ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
+        ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
+        ## mask: [num_combinations, array_length]
+        ## return: [num_combinations]
+        shape = masks.shape[:-1]
+        total_crosstalk = [
+            self.calc_crosstalk_score(m, is_col) for m in masks.flatten(0, -2)
+        ]
+        return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
 
 class DeterministicCtx:
@@ -928,7 +1040,9 @@ def uniform_quantize(num_levels, gradient_clip=False):
         @staticmethod
         def forward(ctx, input):
             # n = float(2 ** k - 1)
-            n = num_levels - 1  # explicit assign number of quantization level,e.g., k=5 or 8
+            n = (
+                num_levels - 1
+            )  # explicit assign number of quantization level,e.g., k=5 or 8
             out = torch.round(input * n) / n
             return out
 
@@ -956,7 +1070,9 @@ class pad_quantize_fn(torch.nn.Module):
         self.w_bit = w_bit  # w_bit is the number of quantization level, not bitwidth !
 
         self.quant_ratio = quant_ratio
-        assert 0 <= quant_ratio <= 1, logger.error(f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}")
+        assert 0 <= quant_ratio <= 1, logger.error(
+            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
+        )
         self.uniform_q = uniform_quantize(num_levels=w_bit, gradient_clip=True)
         self.v_max = v_max
 
@@ -982,14 +1098,18 @@ class pad_quantize_fn(torch.nn.Module):
                 0.99,
                 1,
             ][min(self.w_bit, 16)]
-        assert 0 <= quant_ratio <= 1, logger.error(f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}")
+        assert 0 <= quant_ratio <= 1, logger.error(
+            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
+        )
         self.quant_ratio = quant_ratio
 
     def forward(self, x):
         if self.quant_ratio < 1 and self.training:
             ### implementation from fairseq
             ### must fully quantize during inference
-            quant_noise_mask = torch.empty_like(x, dtype=torch.bool).bernoulli_(1 - self.quant_ratio)
+            quant_noise_mask = torch.empty_like(x, dtype=torch.bool).bernoulli_(
+                1 - self.quant_ratio
+            )
         else:
             quant_noise_mask = None
 
@@ -1018,7 +1138,10 @@ class HardRoundFunction(torch.autograd.Function):
     def backward(ctx, grad_output: Tensor) -> Tensor:
         return grad_output.clone().masked_fill_(ctx.mask, 0)
 
+
 def hard_diff_round(x: Tensor) -> Tensor:
     """Project to the closest permutation matrix"""
-    assert x.size(-1) == x.size(-2), f"input x has to be a square matrix, but got {x.size()}"
+    assert x.size(-1) == x.size(
+        -2
+    ), f"input x has to be a square matrix, but got {x.size()}"
     return HardRoundFunction.apply(x)

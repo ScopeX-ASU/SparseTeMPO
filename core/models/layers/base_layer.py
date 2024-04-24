@@ -268,7 +268,7 @@ class ONNBaseLayer(nn.Module):
 
         # crosstalk_coupling_matrix = self.crosstalk_scheduler.get_crosstalk_matrix(self.phase)
         crosstalk_coupling_matrix = self.crosstalk_scheduler.get_crosstalk_matrix(phase)
-        print(crosstalk_coupling_matrix)
+        # print("coupling", crosstalk_coupling_matrix)
         phase = self.crosstalk_scheduler.apply_crosstalk(
             phase, crosstalk_coupling_matrix
         )
@@ -369,7 +369,7 @@ class ONNBaseLayer(nn.Module):
     def build_phase_from_weight(self, weight: Tensor) -> Tuple[Tensor, Tensor]:
         ## inplace operation: not differentiable operation using copy_
         self.S_scale.data.copy_(
-            self.weight.data.abs().flatten(-2, -1).max(dim=-1, keepdim=True)[0]
+            weight.data.abs().flatten(-2, -1).max(dim=-1, keepdim=True)[0]
         )  # block-wise abs_max as scale factor
 
         weight = torch.where(
@@ -452,6 +452,7 @@ class ONNBaseLayer(nn.Module):
                     )  # cut off gradient for weight_noisy, only flow through weight
                 else:
                     weight = weight_noisy
+                self.noisy_phase = phase # TODO: to DEBUG
 
         elif self.mode == "phase":
             if self.w_bit < 16:
