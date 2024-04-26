@@ -32,6 +32,11 @@ noise:
   phase_noise_std: 0
   crosstalk_factor: 0.05
   random_state: 42
+  crosstalk_scheduler:
+    interv_h: 20
+    interv_v: 120
+    interv_s: 10
+  noise_flag: 0
 
 checkpoint:
   save_best_model_k: 3
@@ -61,4 +66,5 @@ dst_scheduler:
   max_combinations: 100
   init_mode: uniform_power_crosstalk
   power_choice_margin: 2
+  splitter_biases: 90
   node_spacing: [20, 100] # um, row, col spacing in weight matrix

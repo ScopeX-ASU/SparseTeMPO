@@ -139,7 +139,12 @@ def train(
         },
         step=epoch,
     )
-
+    lg.info(
+        f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}"
+    )
+    lg.info(
+        f"Power:{dst_scheduler.get_total_power()}"
+    )
 
 def validate(
     model: nn.Module,
