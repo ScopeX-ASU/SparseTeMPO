@@ -134,18 +134,23 @@ def plot_lowrank_scanning2d_resnet():
 def plot_crosstalk():
     device = "cuda:0"
     layer = TeMPOBlockLinear(8000, 8, miniblock=[1, 1, 8, 8], device=device)
+
     crosstalk_scheduler = CrosstalkScheduler(
         crosstalk_coupling_factor=[
-            3.31603839e-07,
-            -1.39558126e-05,
-            -4.84365615e-05,
-            1.03081137e-02,
-            -1.77423805e-01,
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
             1,
-        ],
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor=[
+            0.2167267,
+            -0.12747211,
+        ],  # a * exp(b*x)
         interv_h=25,
-        interv_v=1200,
-        interv_s=10,
+        interv_v=120,
+        interv_s=19,
         device=device,
     )
     layer.crosstalk_scheduler = crosstalk_scheduler
@@ -159,8 +164,10 @@ def plot_crosstalk():
     phase_nmaes_mean = []
     phase_nmaes_std = []
     layer.set_crosstalk_noise(True)
+    interv_h_minmax = crosstalk_scheduler.ps_width + crosstalk_scheduler.interv_s, 41
+    interv_h_range = np.arange(*interv_h_minmax)
     with torch.no_grad():
-        for interv_h in range(16, 41):
+        for interv_h in interv_h_range:
             layer.crosstalk_scheduler.set_spacing(interv_h=interv_h)
             weight_noisy = layer.build_weight(
                 enable_noise=True, enable_ste=True
@@ -188,7 +195,7 @@ def plot_crosstalk():
     fig, ax, _ = batch_plot(
         "errorbar",
         raw_data={
-            "x": np.arange(16, 41),
+            "x": interv_h_range,
             "y": weight_nmaes_mean,
             "yerror": weight_nmaes_std,
         },
@@ -197,8 +204,8 @@ def plot_crosstalk():
         ylabel="N-MAE",
         fig=fig,
         ax=ax,
-        xrange=[16, 41.1, 10],
-        xlimit=[15, 41],
+        xrange=[interv_h_minmax[0], interv_h_minmax[1] + 0.1, 5],
+        xlimit=[interv_h_minmax[0] - 1, interv_h_minmax[1]],
         yrange=[0, 0.35, 0.1],
         xformat="%.0f",
         yformat="%.1f",
@@ -215,7 +222,7 @@ def plot_crosstalk():
     fig, ax, _ = batch_plot(
         "errorbar",
         raw_data={
-            "x": np.arange(16, 41),
+            "x": interv_h_range,
             "y": phase_nmaes_mean,
             "yerror": phase_nmaes_std,
         },
@@ -224,8 +231,8 @@ def plot_crosstalk():
         ylabel="N-MAE",
         fig=fig,
         ax=ax,
-        xrange=[16, 41.1, 10],
-        xlimit=[15, 41],
+        xrange=[interv_h_minmax[0], interv_h_minmax[1] + 0.1, 5],
+        xlimit=[interv_h_minmax[0] - 1, interv_h_minmax[1]],
         yrange=[0, 0.35, 0.1],
         xformat="%.0f",
         yformat="%.1f",
@@ -245,8 +252,105 @@ def plot_crosstalk():
     pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
 
 
+def plot_spacing():
+    device = "cuda:0"
+    layer = TeMPOBlockLinear(8000, 8, miniblock=[1, 1, 8, 8], device=device)
+    crosstalk_scheduler = CrosstalkScheduler(
+        crosstalk_coupling_factor=[
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
+            1,
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor=[
+            0.2167267,
+            -0.12747211,
+        ],  # a * exp(b*x)
+        interv_h=25,
+        interv_v=1200,
+        interv_s=10,
+        device=device,
+    )
+    layer.crosstalk_scheduler = crosstalk_scheduler
+    # layer.weight.data.fill_(-1)
+    weight = layer.build_weight(enable_noise=False, enable_ste=True).detach()
+    phase, _ = layer.build_phase_from_weight(weight.data)
+    phase = phase.clone()
+
+    weight_nmaes_mean = []
+    phase_nmaes_mean = []
+    power_mean = []
+    layer.set_crosstalk_noise(True)
+    interv_s_range = np.arange(7, 25)
+    interv_h_range = np.arange(16, 41)
+    interv_s_mixmax = (7, 10)
+    interv_h_mixmax = (16, 30)
+    interv_s_range = np.arange(*interv_s_mixmax)
+    interv_h_range = np.arange(*interv_h_mixmax)
+    with torch.no_grad():
+        for interv_s in interv_s_range:
+            weight_nmaes_mean_tmp = []
+            for interv_h in interv_h_range:
+                try:
+                    layer.crosstalk_scheduler.set_spacing(
+                        interv_h=interv_h, interv_s=interv_s
+                    )
+                except:
+                    weight_nmaes_mean_tmp.append(0)
+                    continue
+                weight_noisy = layer.build_weight(
+                    enable_noise=True, enable_ste=True
+                ).detach()
+
+                # print(phase_noisy[0, 0, 0, 0])
+                # print(phase[0, 0, 0, 0])
+
+                weight_nmae = torch.norm(
+                    weight_noisy - weight, p=2, dim=(-2, -1)
+                ) / weight.norm(1, dim=(-2, -1))
+                weight_nmaes_mean_tmp.append(weight_nmae.mean().item())
+
+                print(
+                    f"interv_h: {interv_h}, N-MAE: weight={weight_nmae.mean().item():.5f}"
+                )
+            weight_nmaes_mean.append(weight_nmaes_mean_tmp)
+            power = (
+                layer.calc_weight_MZI_power(reduction="none")
+                .sum(dim=[-4, -3, -2, -1])
+                .mean()
+                .item()
+            )
+            power_mean.append(power)
+    weight_nmaes_mean = np.array(weight_nmaes_mean)
+    print(weight_nmaes_mean.shape)
+    print(interv_s_range.shape)
+    print(interv_h_range.shape)
+    fig, ax = plt.subplots(1, 1)
+
+    name = "PowerCrosstalkSpacing"
+    im = ax.pcolormesh(
+        interv_s_range,
+        interv_h_range,
+        weight_nmaes_mean,
+        vmin=np.min(weight_nmaes_mean),
+        vmax=np.max(weight_nmaes_mean),
+        shading="nearest",
+        cmap=plt.cm.RdYlGn,
+    )
+    fig.colorbar(im, ax=ax)
+
+    set_ms()
+    ensure_dir(f"./figs")
+    fig.savefig(f"./figs/{name}.png")
+    fig.savefig(f"./figs/{name}.pdf")
+    pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
+
+
 if __name__ == "__main__":
     # for sp_mode in ["uniform", "topk", "IS"]:
     #     for sa_mode in ["first_grad", "second_grad"]:
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
-    plot_crosstalk()
+    # plot_crosstalk()
+    plot_spacing()

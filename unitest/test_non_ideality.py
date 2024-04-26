@@ -17,6 +17,7 @@ from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
 from core.utils import get_parameter_group, register_hidden_hooks
 from pyutils.plot import batch_plot
 
+
 def test_mode_switch():
     device = "cuda:0"
     layer = TeMPOBlockLinear(4, 4, device=device)
@@ -34,13 +35,17 @@ def test_crosstalk():
     layer = TeMPOBlockLinear(4, 4, miniblock=[1, 1, 4, 4], device=device)
     crosstalk_scheduler = CrosstalkScheduler(
         crosstalk_coupling_factor=[
-            3.31603839e-07,
-            -1.39558126e-05,
-            -4.84365615e-05,
-            1.03081137e-02,
-            -1.77423805e-01,
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
             1,
-        ],
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor=[
+            0.2167267,
+            -0.12747211,
+        ],  # a * exp(b*x)
         interv_h=25,
         interv_v=1200,
         interv_s=10,
@@ -66,7 +71,9 @@ def test_crosstalk():
         phase_nmae = torch.norm(phase_noisy - phase, p=1) / phase.norm(1)
         weight_nmaes.append(weight_nmae.item())
         phase_nmaes.append(phase_nmae.item())
-        print(f"interv_h: {interv_h}, N-MAE: weight={weight_nmae:.5f} phase={phase_nmae:.5f}")
+        print(
+            f"interv_h: {interv_h}, N-MAE: weight={weight_nmae:.5f} phase={phase_nmae:.5f}"
+        )
     fig, axes = plt.subplots(2, 1, figsize=(6, 8))
     axes[0].plot(range(16, 41), weight_nmaes)
     axes[0].set_xlabel("interv_h (um)")
@@ -76,8 +83,7 @@ def test_crosstalk():
     axes[1].set_ylabel("Phase N-MAE")
     plt.savefig("./unitest/figs/crosstalk_interv_h.png", dpi=300)
 
-
-    # crosstalk_scheduler.interv_h = 15   
+    # crosstalk_scheduler.interv_h = 15
     # for i in range(2):
     #     for j in range(2):
     #         for k in range(2):
@@ -85,6 +91,7 @@ def test_crosstalk():
     #                 mask = torch.tensor([i, j, k, l], device=device)
     #                 score = crosstalk_scheduler.calc_crosstalk_score(mask=mask, is_col=False)
     #                 print(f"mask: {mask}, score: {score}")
+
 
 def test_output_noise():
     device = "cuda:0"

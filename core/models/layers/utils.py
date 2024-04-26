@@ -59,6 +59,7 @@ def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     out = x.matmul(coeff[:-1]).add_(coeff[-1])
     return out
 
+
 def polynomial2(
     x: Tensor | float, y: Tensor | float, coeff: Tensor | List[float]
 ) -> Tensor | float:
@@ -558,16 +559,16 @@ class CrosstalkScheduler(object):
     def __init__(
         self,
         crosstalk_coupling_factor: Tuple[float, ...] = [
-            3.31603839e-07,
-            -1.39558126e-05,
-            -4.84365615e-05,
-            1.03081137e-02,
-            -1.77423805e-01,
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
             1,
         ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
         crosstalk_exp_coupling_factor: float = [
-            0.20046825,
-            -0.12407693,
+            0.2167267,
+            -0.12747211,
         ],  # a * exp(b*x)
         interv_h: float = 24.0,  # horizontal spacing (unit: um) between the center of two MZIs
         interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
