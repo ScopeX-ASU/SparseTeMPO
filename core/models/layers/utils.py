@@ -59,6 +59,41 @@ def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     out = x.matmul(coeff[:-1]).add_(coeff[-1])
     return out
 
+def polynomial2(
+    x: Tensor | float, y: Tensor | float, coeff: Tensor | List[float]
+) -> Tensor | float:
+    ## coeff [1, x, y, x^2, xy, y^2, x^3, x^2y, xy^2, y^3]
+    if len(coeff) == 3:
+        # coeff [1, x, y]
+        return coeff[0] + coeff[1] * x + coeff[2] * y
+    elif len(coeff) == 6:
+        # coeff [1, x, y, x^2, xy, y^2]
+        return (
+            coeff[0]
+            + coeff[1] * x
+            + coeff[2] * y
+            + coeff[3] * x**2
+            + coeff[4] * x * y
+            + coeff[5] * y**2
+        )
+    elif len(coeff) == 10:
+        # coeff [1, x, y, x^2, xy, y^2, x^3, x^2y, xy^2, y^3]
+        x_2, y_2 = x**2, y**2
+        return (
+            coeff[0]
+            + coeff[1] * x
+            + coeff[2] * y
+            + coeff[3] * x_2
+            + coeff[4] * y * x
+            + coeff[5] * y_2
+            + coeff[6] * x_2 * x
+            + coeff[7] * y * x_2
+            + coeff[8] * y_2 * x
+            + coeff[9] * y_2 * y
+        )
+    else:
+        raise NotImplementedError
+
 
 class STE(torch.autograd.Function):
     @staticmethod
@@ -538,6 +573,18 @@ class CrosstalkScheduler(object):
         interv_v: float = 120.0,  # vertical spacing (unit: um) between the center of two MZIs
         interv_s: float = 10.0,  # horizontal spacing (unit: um) between two arms of an MZI
         ps_width: float = 6,  # phase shifter width (unit: um)
+        power_coefficients: tuple[float, ...] = [
+            1.2659822,
+            5.5226021e00,
+            -2.8833720e-01,
+            3.8191843e-01,
+            -2.4061684e-01,
+            1.9616380e-02,
+            -3.5375733e-02,
+            -5.9136748e-04,
+            5.7989508e-03,
+            -4.0769577e-04,
+        ],  # [1, a, b, a^2, ab, b^2, a^3, a^2b, ab^2, b^3]
         device="cuda:0",
     ) -> None:
         super().__init__()
@@ -549,6 +596,7 @@ class CrosstalkScheduler(object):
         self.set_spacing(interv_h, interv_v, interv_s)
         self.device = device
         self.crosstalk_matrix = None
+        self.power_coefficients = torch.tensor(power_coefficients, device=device)
 
     def set_spacing(
         self,
@@ -739,6 +787,21 @@ class CrosstalkScheduler(object):
             self.calc_crosstalk_score(m, is_col) for m in masks.flatten(0, -2)
         ]
         return torch.tensor(total_crosstalk, device=self.device).view(shape)
+
+    def calc_MZI_power(self, delta_phi: Tensor, reduction: str = "sum") -> Tensor:
+        ## delta_phi: phase difference of an MZI, input must be -pi/2 to pi/2
+        interv_s = max(7, min(self.interv_s, 25))
+        power = polynomial2(
+            delta_phi.abs(),
+            interv_s,
+            self.power_coefficients,
+        )
+        if reduction == "sum":
+            return power.mean()
+        elif reduction == "none":
+            return power
+        else:
+            raise NotImplementedError
 
 
 class DeterministicCtx:

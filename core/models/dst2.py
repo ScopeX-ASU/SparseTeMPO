@@ -176,7 +176,7 @@ class MultiMask(object):
             }
             return new_mask
         return self.data | other
-    
+
     def __ror__(self, other):
         return self.__or__(other)
 
@@ -188,7 +188,7 @@ class MultiMask(object):
             }
             return new_mask
         return self.data ^ other
-    
+
     def __rxor__(self, other):
         return self.__xor__(other)
 
@@ -238,7 +238,7 @@ class DSTScheduler2(nn.Module):
         ADC_power: float = 7.5,
         TIA_power: float = 3,
         HDAC_power: float = 6.43,
-        first_layer_pruning = False,
+        first_layer_pruning=False,
         update_frequency: int = 100,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
@@ -312,7 +312,6 @@ class DSTScheduler2(nn.Module):
         self.name2death_rate = {}
         self.splitter_biases = splitter_biases
 
-
         # Power exploration.
         # Default, no exploration on power
         self.set_death_power_exploration(False)
@@ -323,7 +322,6 @@ class DSTScheduler2(nn.Module):
         self.TIA_power = TIA_power
         self.HDAC_power = HDAC_power
 
-
         # stats
         self.name2zeros = {}
         self.name2nonzeros = {}
@@ -331,6 +329,7 @@ class DSTScheduler2(nn.Module):
         self.survival = {}
         self.pruned_number = {}
         self.params = {}
+        self.layers = {}
 
     """
     Basic
@@ -358,6 +357,7 @@ class DSTScheduler2(nn.Module):
                     self.masks[name_cur] = MultiMask(
                         {"elem_mask": m.weight.shape}, device=self.device
                     )
+                    self.layers[name_cur] = m
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
@@ -393,10 +393,8 @@ class DSTScheduler2(nn.Module):
             self.structure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
 
-
         else:
             raise ValueError("unrecognize pruning type")
-        
 
     def step(self, pruning_type: str | None = None):
         pruning_type = pruning_type or self.pruning_type
@@ -499,6 +497,7 @@ class DSTScheduler2(nn.Module):
             biases = [biases] * int(np.log2(self.modules[0].conv_cfg["miniblock"][-1]))
         self.splitter_biases = [b / 180 * np.pi for b in biases]
 
+    
     def cal_ports_power(self, ports_array: Tensor) -> Tensor:
         ## ports_array: [#combinations, array_length] bool mask representing the sparsity pattern
         ## return: [#combinations] power of each sparsity pattern
@@ -542,15 +541,24 @@ class DSTScheduler2(nn.Module):
             #     .mul_(2)
             #     .sub_(np.pi / 2))
             # print(delta_phi)
-            p = (
-                ratios.sqrt_()
-                .acos()
-                .mul_(2)
-                .sub_(self.splitter_biases[level])
-                .abs_()
-                .mul_(self.pi_shift_power / np.pi)
-                .sum(dim=sum_dims)
-            )  # [#combinations]
+            angle = (
+                ratios.sqrt_() # \in [0, 1]
+                .acos() # \in [pi/2, 0]
+                .mul_(2) # \in [pi, 0]
+                .sub_(self.splitter_biases[level]) # if bias=pi/2, then \in [pi/2, -pi/2]
+            )
+            ## use crosstalk scheduler to compute the power with fitted curve of simulation data
+            ## here we make sure angle is in the range of [-pi/2, pi/2]
+            p = self.modules[0].crosstalk_scheduler.get_MZI_power(angle.data, reduction="none").sum(dim=sum_dims)
+            # p = (
+            #     ratios.sqrt_()
+            #     .acos()
+            #     .mul_(2)
+            #     .sub_(self.splitter_biases[level])
+            #     .abs_()
+            #     .mul_(self.pi_shift_power / np.pi)
+            #     .sum(dim=sum_dims)
+            # )  # [#combinations]
             # p = (
             #     ratios.mul_(-2).add_(1)
             #     .asin_()
@@ -695,14 +703,14 @@ class DSTScheduler2(nn.Module):
         ## best_patterns [#num, array_length], best_score: float
         if masks.shape[0] == 1:
             return masks, self.calc_crosstalk_score(masks[0], is_col)
-        
-        # If it is col pattern, just return the first pattern, 
+
+        # If it is col pattern, just return the first pattern,
         # no need to calculate the crosstalk based on current design
         ### If later on need to calculate the col crosstalk pattern,
-        ### You can delete this part of code 
+        ### You can delete this part of code
         if is_col:
             return masks, 0.0
-        
+
         scores = []
         for mask in masks:
             score = self.calc_crosstalk_score(mask, is_col)
@@ -794,11 +802,13 @@ class DSTScheduler2(nn.Module):
     ) -> float:
         return (mask_length - empty_cols) * (HDAC_power)
 
-    # def find_max_min_power_from_mask(self, mode="structure" TIA_power, ADC_power):
-    #     if mode != "structure":
-    #         raise ValueError("Not structure pruning, can't calc power from here")
-
-    #     for name, mask in self.masks.items():
+    def calc_weight_MZI_power(self, name: str, mask: MultiMask) -> float:
+        layer = self.layers[name]
+        weight = self.params[name].data
+        with torch.no_grad():
+            return layer.calc_weight_MZI_power(weight * mask.data, src="weight", reduction="none") # [p,q,r,c,k1,k2]
+        
+            
 
     def init_death_rate(self, death_rate, pruning_type="unstructure"):
         if pruning_type == "unstructure":
@@ -1879,83 +1889,102 @@ class DSTScheduler2(nn.Module):
             raise NotImplementedError
 
     def calculate_pruned_elements(
-            self, 
-            row_elements: int, 
-            col_elements: int, 
-            rows_pruned: int, 
-            cols_pruned: int, 
-            order: str = "col_row"
-            ):
-    # Calculate the number of elements pruned when rows and columns are pruned
+        self,
+        row_elements: int,
+        col_elements: int,
+        rows_pruned: int,
+        cols_pruned: int,
+        order: str = "col_row",
+    ):
+        # Calculate the number of elements pruned when rows and columns are pruned
         if order == "row_col":
-            return row_elements * rows_pruned + (col_elements - rows_pruned) * cols_pruned
+            return (
+                row_elements * rows_pruned + (col_elements - rows_pruned) * cols_pruned
+            )
         else:
-            return col_elements * cols_pruned + (row_elements - cols_pruned) * rows_pruned
+            return (
+                col_elements * cols_pruned + (row_elements - cols_pruned) * rows_pruned
+            )
 
     def helper_for_find_row_col_pruning_combination(
-            self, 
-            depth: int,          # Current slide of mask 
-            current_pruned: int, # Number of elements been pruned away at current slide and slides befroe  
-            upper_limit_pruning_number: int,
-            lower_limit_pruning_number: int,
-            max_depth: int,          # The maxiumn depth of slides
-            row_elements: Tensor,    # Number of elements would be turned off by one row; [depth] shape is expected
-            col_elements: Tensor,    # Number of elements would be turned off by one col; [depth] shape is expected
-            active_rows: Tensor,     # Number of rows are on in the current mask; [depth] shape is expectd
-            active_cols: Tensor,     # Number of cols are on in the current mask; [depth] shape is expectd
-            path: list,              # Possible solution, but will not be final solution unless is been appended into result  
-            results: list,            # Final possible results
-            pruning_order: str = "col_row",   # Either "col_row" pruning order or "row_col" pruning order
-            ):
-        
+        self,
+        depth: int,  # Current slide of mask
+        current_pruned: int,  # Number of elements been pruned away at current slide and slides befroe
+        upper_limit_pruning_number: int,
+        lower_limit_pruning_number: int,
+        max_depth: int,  # The maxiumn depth of slides
+        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
+        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
+        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
+        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
+        path: list,  # Possible solution, but will not be final solution unless is been appended into result
+        results: list,  # Final possible results
+        pruning_order: str = "col_row",  # Either "col_row" pruning order or "row_col" pruning order
+    ):
 
         if lower_limit_pruning_number <= current_pruned <= upper_limit_pruning_number:
             results.append(path.copy())  # Append a copy of the current path to results
             return
         if current_pruned > upper_limit_pruning_number or depth == max_depth:
             return  # Stop if we have pruned too many elements or reached max depth
-        
+
         # Explore the number of rows and columns that can be pruned at the current depth
         for r in range(active_rows[depth]):
             for c in range(active_cols[depth]):
                 # Get the number of elements pruned away by this current choice
-                pruned_by_this_choice = self.calculate_pruned_elements(row_elements[depth].item(), col_elements[depth].item(), r, c, pruning_order)
+                pruned_by_this_choice = self.calculate_pruned_elements(
+                    row_elements[depth].item(),
+                    col_elements[depth].item(),
+                    r,
+                    c,
+                    pruning_order,
+                )
                 print("Current choice pruned away elements:", pruned_by_this_choice)
-                print("Current total pruned away elements:", current_pruned + pruned_by_this_choice)
+                print(
+                    "Current total pruned away elements:",
+                    current_pruned + pruned_by_this_choice,
+                )
                 if current_pruned + pruned_by_this_choice < lower_limit_pruning_number:
-                    path.append([r, c])  # Choose to prune r rows and c columns at this depth
+                    path.append(
+                        [r, c]
+                    )  # Choose to prune r rows and c columns at this depth
                     self.helper_for_find_row_col_pruning_combination(
-                        depth + 1, 
-                        current_pruned + pruned_by_this_choice, 
+                        depth + 1,
+                        current_pruned + pruned_by_this_choice,
                         upper_limit_pruning_number,
-                        lower_limit_pruning_number, 
+                        lower_limit_pruning_number,
                         max_depth,
-                        row_elements, 
-                        col_elements, 
-                        active_rows, 
-                        active_cols, 
-                        path, 
+                        row_elements,
+                        col_elements,
+                        active_rows,
+                        active_cols,
+                        path,
                         results,
-                        pruning_order)
+                        pruning_order,
+                    )
                     path.pop()  # Backtrack
 
     def find_all_pruning_combinations(
-            self, 
-            max_depth: int, # Should be p*q total loading orders
-            row_elements: Tensor, # Number of elements would be turned off by one row; [depth] shape is expected
-            col_elements: Tensor, # Number of elements would be turned off by one col; [depth] shape is expected
-            active_rows: Tensor, # Number of rows are on in the current mask; [depth] shape is expectd
-            active_cols: Tensor, # Number of cols are on in the current mask; [depth] shape is expectd
-            target_pruned: int, # The total number would be pruned off by the target, expect the number from num_remove
-            pruning_order: str = "col_row", # Either "col_row" pruning order or "row_col" pruning order
-            range_percentage: float = 0.1, # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
-            ):
-        
+        self,
+        max_depth: int,  # Should be p*q total loading orders
+        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
+        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
+        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
+        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
+        target_pruned: int,  # The total number would be pruned off by the target, expect the number from num_remove
+        pruning_order: str = "col_row",  # Either "col_row" pruning order or "row_col" pruning order
+        range_percentage: float = 0.1,  # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
+    ):
+
         results = []
         stack = [(0, 0, [])]  # (current depth, current pruned, path)
 
-        upper_limit_pruning_number = int(round(target_pruned + target_pruned * range_percentage))
-        lower_limit_pruning_number = int(round(target_pruned - target_pruned * range_percentage))
+        upper_limit_pruning_number = int(
+            round(target_pruned + target_pruned * range_percentage)
+        )
+        lower_limit_pruning_number = int(
+            round(target_pruned - target_pruned * range_percentage)
+        )
 
         if DEBUG:
             print("Upper limit:", upper_limit_pruning_number)
@@ -1964,7 +1993,11 @@ class DSTScheduler2(nn.Module):
         while stack:
             depth, current_pruned, path = stack.pop()
 
-            if lower_limit_pruning_number <= current_pruned <= upper_limit_pruning_number:
+            if (
+                lower_limit_pruning_number
+                <= current_pruned
+                <= upper_limit_pruning_number
+            ):
                 results.append(path.copy())
                 continue
 
@@ -1974,10 +2007,11 @@ class DSTScheduler2(nn.Module):
             for r in range(active_rows[depth] + 1):
                 for c in range(active_cols[depth] + 1):
                     pruned_by_this_choice = self.calculate_pruned_elements(
-                        row_elements[depth].item(), 
-                        col_elements[depth].item(), 
-                        r, c, 
-                        pruning_order
+                        row_elements[depth].item(),
+                        col_elements[depth].item(),
+                        r,
+                        c,
+                        pruning_order,
                     )
                     new_pruned = current_pruned + pruned_by_this_choice
                     if new_pruned <= upper_limit_pruning_number:
@@ -1985,33 +2019,33 @@ class DSTScheduler2(nn.Module):
 
         return results
         # self.helper_for_find_row_col_pruning_combination(
-        #     0, 
-        #     0, 
+        #     0,
+        #     0,
         #     upper_limit_pruning_number,
         #     lower_limit_pruning_number,
-        #     max_depth, 
-        #     row_elements, 
-        #     col_elements, 
-        #     active_rows, 
-        #     active_cols, 
-        #     [], 
+        #     max_depth,
+        #     row_elements,
+        #     col_elements,
+        #     active_rows,
+        #     active_cols,
+        #     [],
         #     results,
         #     pruning_order)
-        
+
         return results
 
     def find_all_pruning_combinations_dp(
-            self, 
-            max_depth: int, # Should be p*q total loading orders
-            row_elements: Tensor, # Number of elements would be turned off by one row; [depth] shape is expected
-            col_elements: Tensor, # Number of elements would be turned off by one col; [depth] shape is expected
-            active_rows: Tensor, # Number of rows are on in the current mask; [depth] shape is expectd
-            active_cols: Tensor, # Number of cols are on in the current mask; [depth] shape is expectd
-            target_pruned: int, # The total number would be pruned off by the target, expect the number from num_remove
-            pruning_order: str = "col_row", # Either "col_row" pruning order or "row_col" pruning order
-            range_percentage: float = 0.1, # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
-            ):
-        
+        self,
+        max_depth: int,  # Should be p*q total loading orders
+        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
+        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
+        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
+        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
+        target_pruned: int,  # The total number would be pruned off by the target, expect the number from num_remove
+        pruning_order: str = "col_row",  # Either "col_row" pruning order or "row_col" pruning order
+        range_percentage: float = 0.1,  # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
+    ):
+
         upper_limit = int(target_pruned * (1 + range_percentage))
         lower_limit = int(target_pruned * (1 - range_percentage))
 
@@ -2023,9 +2057,13 @@ class DSTScheduler2(nn.Module):
                 for r in range(active_rows[depth].item() + 1):
                     for c in range(active_cols[depth].item() + 1):
                         pruned_by_this = self.calculate_pruned_elements(
-                            row_elements[depth].item(), col_elements[depth].item(), 
-                            r, c, pruning_order)
-                        
+                            row_elements[depth].item(),
+                            col_elements[depth].item(),
+                            r,
+                            c,
+                            pruning_order,
+                        )
+
                         new_pruned = pruned_so_far + pruned_by_this
                         if new_pruned <= upper_limit:
                             if new_pruned not in dp[depth + 1]:
@@ -2033,7 +2071,7 @@ class DSTScheduler2(nn.Module):
                             # Add new paths to the dp structure
                             for path in paths:
                                 dp[depth + 1][new_pruned].append(path + [[r, c]])
-        
+
         # Collect all valid paths
         results = []
         for pruned_count, paths in dp[max_depth].items():
@@ -2041,8 +2079,6 @@ class DSTScheduler2(nn.Module):
                 results.extend(paths)
 
         return results
-
-
 
     def row_col_magnitude_select(
         self,
@@ -2057,61 +2093,71 @@ class DSTScheduler2(nn.Module):
 
         # print(death)
         if death:
-            # Get full mask 
+            # Get full mask
             full_mask = mask.data.bool()
             print(full_mask)
-            
+
         else:
             full_mask = mask.data.bool()
             full_mask = ~full_mask
         # Reshape the mask into the proper number of slides, each slides the k1' and k2'
         # Easy to calculate each column or row can turn off how many elements based on curretn situation
-        full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(p*q, r*k1, c*k2)
-        
-        col_turn_off = torch.sum(full_mask_reshape, dim=1)  # Sum over k1, result is (depth, k2)
-        row_turn_off = torch.sum(full_mask_reshape, dim=2)  # Sum over k2, result is (depth, k1)
-        
-        # For each slides, 
+        full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(
+            p * q, r * k1, c * k2
+        )
+
+        col_turn_off = torch.sum(
+            full_mask_reshape, dim=1
+        )  # Sum over k1, result is (depth, k2)
+        row_turn_off = torch.sum(
+            full_mask_reshape, dim=2
+        )  # Sum over k2, result is (depth, k1)
+
+        # For each slides,
         # Number of elements turned off by one column; [depth] shape
         col_turn_off_elements = torch.max(col_turn_off, dim=1)[0]
-        
-        # For each slides, 
+
+        # For each slides,
         # Number of elements turned off by one row; [depth] shape
         row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
 
-        # For each slides, 
+        # For each slides,
         # Number of columns can be turned off; [depth] shape
-        col_on_number = torch.sum(mask["col_mask"].reshape(p*q, c*k2), dim=-1)
-        # For each slides, 
+        col_on_number = torch.sum(mask["col_mask"].reshape(p * q, c * k2), dim=-1)
+        # For each slides,
         # Number of rows can be turned off; [depth] shape
-        row_on_number = torch.sum(mask["row_mask"].reshape(p*q, r*k1), dim=-1)
+        row_on_number = torch.sum(mask["row_mask"].reshape(p * q, r * k1), dim=-1)
 
         # [Number of different combinations, loading sequece(p*q), 2(row col turning off combination)]
-        results = torch.tensor(self.find_all_pruning_combinations_dp(
-            max_depth = p*q,
-            row_elements = row_turn_off_elements,
-            col_elements = col_turn_off_elements,
-            active_rows = row_on_number,
-            active_cols = col_on_number,
-            target_pruned = num_select,
-            pruning_order = "col_row",
-            range_percentage = 0.1,
-            ), dtype=torch.float32, device=self.device
+        results = torch.tensor(
+            self.find_all_pruning_combinations_dp(
+                max_depth=p * q,
+                row_elements=row_turn_off_elements,
+                col_elements=col_turn_off_elements,
+                active_rows=row_on_number,
+                active_cols=col_on_number,
+                target_pruned=num_select,
+                pruning_order="col_row",
+                range_percentage=0.1,
+            ),
+            dtype=torch.float32,
+            device=self.device,
         )
-
 
         block_wise_magnitude = weight.data.norm(p=2, dim=(2, 3, 4, 5)).flatten()
 
         # [NC, P*Q] x [P*Q] = [NC]
         print(results.shape)
         result_mag = results.sum(dim=-1).matmul(block_wise_magnitude)
-        
+
         # First filter 2 times max combination
         # Rough filter
-        results = results[torch.argsort(result_mag)[:self.max_combinations * 2]].int()
+        results = results[torch.argsort(result_mag)[: self.max_combinations * 2]].int()
 
         if self.group == "layer":  # sort col magnitude per layer
-            col_magnitude = weight.data.norm(p=2, dim=(2, 4), keepdim=True).square_() # [p, q, 1, c, 1, k2]
+            col_magnitude = weight.data.norm(
+                p=2, dim=(2, 4), keepdim=True
+            ).square_()  # [p, q, 1, c, 1, k2]
             # col_magnitude = weight.permute(0, 1, 2, 4, 3, 5).reshape(p*q, r*k1, c*k2).norm(p=2, dim=1)
             # Shape [p*q, c*k2]
             if death:
@@ -2120,31 +2166,39 @@ class DSTScheduler2(nn.Module):
                 col_magnitude[mask["col_mask"]] = -1
 
             # [p*q, c*k2]
-            col_magnitude = col_magnitude.reshape(p*q, c*k2)
+            col_magnitude = col_magnitude.reshape(p * q, c * k2)
             # Now the shape is [Number of slides(p*q), columns(c*k2)]
 
             # [p*q, c*k2]
-            _, col_indices = torch.sort(col_magnitude, dim=-1, descending=False if death else True)
+            _, col_indices = torch.sort(
+                col_magnitude, dim=-1, descending=False if death else True
+            )
             # if DEBUG:
-                # print("This is col_indices:", col_indices)
-                # print("Col indices shape:", col_indices.shape)
+            # print("This is col_indices:", col_indices)
+            # print("Col indices shape:", col_indices.shape)
 
             output_masks = []
-            for i in range(results.shape[0]):# [p*q, c*k2]
+            for i in range(results.shape[0]):  # [p*q, c*k2]
                 col_temp_mask = torch.zeros_like(col_indices, dtype=torch.bool)
-                for j in range(p*q):
+                for j in range(p * q):
                     # print("col_indices shape:", col_indices.shape)
                     # print("col temp mask shape:", col_temp_mask.shape)
-                    num = results[i, j, 1].item() # Curent combinnation, current slide, column turning off number
+                    num = results[
+                        i, j, 1
+                    ].item()  # Curent combinnation, current slide, column turning off number
                     # print(j, num)
                     # print("These are the indices:", col_indices[j, : num])
-                    col_temp_mask[j, col_indices[j, : num]] = True
+                    col_temp_mask[j, col_indices[j, :num]] = True
                 # [1]
                 col_mags_sum = col_magnitude[col_temp_mask].sum()
                 # [p, q, r, c, k1, k2] * [p, q, 1, c, 1, k2]
                 # [p, q, r, 1, k1, 1]
 
-                pruned_row_magnitude = (weight.data * col_temp_mask.reshape(p, q, 1, c, 1, k2)).norm(p=2, dim=(3, 5), keepdim=True).square_()
+                pruned_row_magnitude = (
+                    (weight.data * col_temp_mask.reshape(p, q, 1, c, 1, k2))
+                    .norm(p=2, dim=(3, 5), keepdim=True)
+                    .square_()
+                )
 
                 if death:
                     pruned_row_magnitude[~mask["row_mask"]] = 1e8
@@ -2152,10 +2206,12 @@ class DSTScheduler2(nn.Module):
                     pruned_row_magnitude[mask["row_mask"]] = -1
 
                 # [p*q, r*k1]
-                pruned_row_magnitude = pruned_row_magnitude.reshape(p*q, r*k1)
+                pruned_row_magnitude = pruned_row_magnitude.reshape(p * q, r * k1)
 
                 # [p*q, r*k1]
-                _, row_indices = torch.sort(pruned_row_magnitude, dim=-1, descending=False if death else True)
+                _, row_indices = torch.sort(
+                    pruned_row_magnitude, dim=-1, descending=False if death else True
+                )
 
                 # print("row_indices shape:", row_indices.shape)
 
@@ -2163,68 +2219,85 @@ class DSTScheduler2(nn.Module):
 
                 # print("row_tem mask shape:", row_temp_mask.shape)
 
-                for z in range(p*q):
-                    
-                    
-                    num = results[i, z, 0].item() # Curent combinnation, current slide, row turning off number
+                for z in range(p * q):
+
+                    num = results[
+                        i, z, 0
+                    ].item()  # Curent combinnation, current slide, row turning off number
                     # Access current slide's which row to be turned on
-                    row_temp_mask[z, row_indices[z, : num]] = True
-                
+                    row_temp_mask[z, row_indices[z, :num]] = True
 
                 row_mags_sum = pruned_row_magnitude[row_temp_mask].sum()
-                
-                col_temp_mask = (~col_temp_mask).reshape(p, q, c, k2).unsqueeze(2).unsqueeze(4)
-                row_temp_mask = (~row_temp_mask).reshape(p, q, r, k1).unsqueeze(3).unsqueeze(5)
 
-                new_combo_mask = MultiMask({"row_mask": [p, q, r, 1, k1, 1], "col_mask": [p, q, 1, c, 1, k2]})
+                col_temp_mask = (
+                    (~col_temp_mask).reshape(p, q, c, k2).unsqueeze(2).unsqueeze(4)
+                )
+                row_temp_mask = (
+                    (~row_temp_mask).reshape(p, q, r, k1).unsqueeze(3).unsqueeze(5)
+                )
+
+                new_combo_mask = MultiMask(
+                    {"row_mask": [p, q, r, 1, k1, 1], "col_mask": [p, q, 1, c, 1, k2]}
+                )
                 new_combo_mask["row_mask"] = row_temp_mask
                 new_combo_mask["col_mask"] = col_temp_mask
                 ## TODO: row_temp_mask
-                output_masks.append(((row_mags_sum + col_mags_sum).item() , new_combo_mask))
-
+                output_masks.append(
+                    ((row_mags_sum + col_mags_sum).item(), new_combo_mask)
+                )
 
             ## [max_comb, multimask]
-            output_masks = [m[1] for m in sorted(output_masks, key=lambda x: x[0])][: self.max_combinations]
+            output_masks = [m[1] for m in sorted(output_masks, key=lambda x: x[0])][
+                : self.max_combinations
+            ]
 
             best_gain = float("-inf")
             best_mask = None
 
-
             for mask_temp in output_masks:
                 if death:
-                    mask_temp["row_mask"] = mask["row_mask"].clone() * mask_temp["row_mask"]
-                    mask_temp["col_mask"] = mask["col_mask"].clone() * mask_temp["col_mask"]
+                    mask_temp["row_mask"] = (
+                        mask["row_mask"].clone() * mask_temp["row_mask"]
+                    )
+                    mask_temp["col_mask"] = (
+                        mask["col_mask"].clone() * mask_temp["col_mask"]
+                    )
                 else:
-                    mask_temp["row_mask"] = ~(~(mask["row_mask"].clone()) * mask_temp["row_mask"])
-                    mask_temp["col_mask"] = ~(~(mask["col_mask"].clone()) * mask_temp["col_mask"])
+                    mask_temp["row_mask"] = ~(
+                        ~(mask["row_mask"].clone()) * mask_temp["row_mask"]
+                    )
+                    mask_temp["col_mask"] = ~(
+                        ~(mask["col_mask"].clone()) * mask_temp["col_mask"]
+                    )
 
                 crosstalk_gain = (
-                    self.calc_crosstalk_scores(mask_temp["row_mask"][..., 0], is_col=False).sum()
-                    - self.calc_crosstalk_scores(mask["row_mask"][..., 0], is_col=False).sum()
-                    ).item()
-                                
+                    self.calc_crosstalk_scores(
+                        mask_temp["row_mask"][..., 0], is_col=False
+                    ).sum()
+                    - self.calc_crosstalk_scores(
+                        mask["row_mask"][..., 0], is_col=False
+                    ).sum()
+                ).item()
 
                 # print("This is the final mask for calculation ports:", mask["row_mask"].flatten(0, -2).shape)
                 mask_power = self.cal_ports_power(mask["col_mask"].flatten(0, -2)).sum()
-                mask_temp_power = self.cal_ports_power(mask_temp["col_mask"].flatten(0, -2)).sum()
+                mask_temp_power = self.cal_ports_power(
+                    mask_temp["col_mask"].flatten(0, -2)
+                ).sum()
 
                 power_gain = (mask_power - mask_temp_power).item()
 
                 if crosstalk_gain + power_gain > best_gain:
                     best_mask = mask_temp
 
-
         #     if death:
         #         row_magnitude[~mask["row_mask"]] = 1e8
         #     else:
         #         row_magnitude[mask["row_mask"]] = -1
-            
+
         #     row_magnitude = row_magnitude.reshape(p*q, r*k1)
 
         #     row_mags, row_indices = torch.sort(row_magnitude, dim=-1, descending=False if death else True)
-
-
-
 
         #     # Iterate all possibility and find the minimal magnitude among these combination
         #     for i in range(len(results)):
@@ -2239,24 +2312,22 @@ class DSTScheduler2(nn.Module):
 
         #             # Magnitude can be sum
         #             one_combination_magnitude += col_mags.sum().item()
-        #             # But need indices to update col mask for next row wise 
+        #             # But need indices to update col mask for next row wise
         #             one_combination_col_mask.append(col_indices)
 
-        #         # row_magnitude = 
-
-
+        #         # row_magnitude =
 
         if DEBUG:
             print(full_mask)
-            print(full_mask.permute(0, 1, 2, 4, 3, 5).reshape(p*q, r*k1, c*k2))
+            print(full_mask.permute(0, 1, 2, 4, 3, 5).reshape(p * q, r * k1, c * k2))
             print("Total number need to be pruned:", num_select)
             print("number of elements turned off by row:", row_turn_off_elements)
             print("number of elements turned off by col:", col_turn_off_elements)
             print("Turning on rows:", row_on_number)
-            print("Turning on cols:", col_on_number)    
+            print("Turning on cols:", col_on_number)
             # print("Reshaped col magnitude:", col_magnitude)
             # print("And its shape:", col_magnitude.shape)
-            # print("Length of the results:", type(results[0]))       
+            # print("Length of the results:", type(results[0]))
             # print("Pairs of each P, Q loading sequence, number of elements turned off by one column and by one row under current state:", col_row_possible_turned_off_elements_number_pairs)
             # print("Pairs of each P, Q loading sequence, number of columns and rows on under current state:", current_on_col_row_number_pairs)
             print("Possible combinations:", results)
@@ -2291,18 +2362,17 @@ class DSTScheduler2(nn.Module):
         #         death=death,
         #         num_select=num_of_elements_row_removes
         #     )
-            
 
         #     total_power = self.cal_ports_power(new_mask["col_mask"].flatten(0, -2)).sum().item()
         #     total_power += self.calc_TIA_ADC_powers(new_mask["row_mask"][..., 0]).sum().item()
         #     total_power += self.calc_HDAC_powers(new_mask["col_mask"][...]).sum().item()
-            
+
         #     crosstalk = (
         #         self.calc_crosstalk_scores(new_mask["col_mask"]).sum().item()
         #         + self.calc_crosstalk_scores(new_mask["row_mask"][..., 0]).sum().item()
         #     )
 
-        #     # Set a bias, since row pruning would hurt CNN a lot due to kernenl been pruned out, 
+        #     # Set a bias, since row pruning would hurt CNN a lot due to kernenl been pruned out,
         #     # we would like to set a bias if the row pruning elements is less than col pruning elements
         #     bias = 5 if num_of_elements_row_removes < num_of_elements_col_removes else 0
 
@@ -2312,7 +2382,6 @@ class DSTScheduler2(nn.Module):
         #         best_pattern = new_mask
 
         return best_mask
-
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)

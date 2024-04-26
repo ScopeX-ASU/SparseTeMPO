@@ -198,7 +198,7 @@ class ONNBaseLayer(nn.Module):
             return x  #  no noise injected
 
         if src == "weight":
-            phase, S_scale = self.build_phase_from_weight(x)
+            phase, S_scale = self.build_phase_from_weight_(x)
             # we need to use this func to update S_scale and keep track of S_scale if weight gets updated.
         elif src == "phase":
             phase = x
@@ -231,7 +231,7 @@ class ONNBaseLayer(nn.Module):
             return x  #  no noise injected
 
         if src == "weight":
-            phase, S_scale = self.build_phase_from_weight(x)
+            phase, S_scale = self.build_phase_from_weight_(x)
             # we need to use this func to update S_scale and keep track of S_scale if weight gets updated.
         elif src == "phase":
             phase = x
@@ -258,7 +258,7 @@ class ONNBaseLayer(nn.Module):
             return x  #  no noise injected
 
         if src == "weight":
-            phase, S_scale = self.build_phase_from_weight(
+            phase, S_scale = self.build_phase_from_weight_(
                 x
             )  # we need to use this func to update S_scale and keep track of S_scale if weight gets updated.
         elif src == "phase":
@@ -328,15 +328,15 @@ class ONNBaseLayer(nn.Module):
                 )
         return x
 
-    def cal_switch_power(self, weight, src: str = "weight") -> None:
+    def calc_weight_MZI_power(
+        self, weight=None, src: str = "weight", reduction: str = "none"
+    ) -> None:
 
         weight = weight if weight is not None else self.weight
 
-        if (not self._enable_power_count) or self.switch_power_scheduler is None:
-            return None  #  don't count power affect on this layer
-
         if src == "weight":
-            phase, S_scale = self.build_phase_from_weight(
+            ## no inplace modification here.
+            phase, _ = self.build_phase_from_weight(
                 weight
             )  # we need to use this func to update S_scale and keep track of S_scale if weight gets updated.
         elif src == "phase":
@@ -344,11 +344,9 @@ class ONNBaseLayer(nn.Module):
         else:
             raise NotImplementedError
 
-        average_layer_switch_power = (
-            self.switch_power_scheduler.calculate_average_power(phase)
-        )
-
-        return average_layer_switch_power
+        return self.crosstalk_scheduler.calc_MZI_power(
+            phase, reduction=reduction
+        )  # [p,q,r,c,k1,k2]
 
     def build_weight_from_phase(self, phases: Tensor) -> Tensor:
         ## inplace operation: not differentiable operation using copy_
@@ -366,19 +364,26 @@ class ONNBaseLayer(nn.Module):
             *self.build_phase_from_voltage(voltage, S_scale)
         )
 
+    def build_phase_from_weight_(self, weight: Tensor) -> Tuple[Tensor, Tensor]:
+        ## inplace operation: not differentiable operation using copy_
+        phase, S_scale = self.build_phase_from_weight(weight)
+        self.phase.data.copy_(phase)
+        self.S_scale.data.copy_(S_scale)
+        return self.phase, self.S_scale
+
     def build_phase_from_weight(self, weight: Tensor) -> Tuple[Tensor, Tensor]:
         ## inplace operation: not differentiable operation using copy_
-        self.S_scale.data.copy_(
+        S_scale = (
             weight.data.abs().flatten(-2, -1).max(dim=-1, keepdim=True)[0]
         )  # block-wise abs_max as scale factor
 
         weight = torch.where(
-            self.S_scale[..., None] > 1e-8,
-            weight.data.div(self.S_scale[..., None]),
+            S_scale[..., None] > 1e-8,
+            weight.data.div(S_scale[..., None]),
             torch.zeros_like(weight.data),
         )
-        self.phase.data.copy_(mzi_out_diff_to_phase(weight))
-        return self.phase, self.S_scale
+        phase = mzi_out_diff_to_phase(weight)
+        return phase, S_scale
 
     def build_voltage_from_phase(
         self,
@@ -395,14 +400,14 @@ class ONNBaseLayer(nn.Module):
         raise NotImplementedError
 
     def build_voltage_from_weight(self, weight: Tensor) -> Tuple[Tensor, Tensor]:
-        return self.build_voltage_from_phase(*self.build_phase_from_weight(weight))
+        return self.build_voltage_from_phase(*self.build_phase_from_weight_(weight))
 
     def sync_parameters(self, src: str = "weight") -> None:
         """
         description: synchronize all parameters from the source parameters
         """
         if src == "weight":
-            self.build_phase_from_weight(self.weight)
+            self.build_phase_from_weight_(self.weight)
         elif src == "phase":
             self.build_weight_from_phase(self.phase)
         elif src == "voltage":
@@ -435,7 +440,7 @@ class ONNBaseLayer(nn.Module):
                 else:
                     weight_tmp = weight
 
-                phase, S_scale = self.build_phase_from_weight(weight_tmp)
+                phase, S_scale = self.build_phase_from_weight_(weight_tmp)
                 ## step 1 add random phase variation
                 phase = self._add_phase_variation(phase, src="phase")
 
@@ -445,14 +450,16 @@ class ONNBaseLayer(nn.Module):
                 ## reconstruct noisy weight
                 weight_noisy = mzi_phase_to_out_diff(phase).mul(S_scale[..., None])
                 if self._enable_power_gating and self.prune_mask is not None:
-                    weight_noisy = weight_noisy * self.prune_mask.data ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
+                    weight_noisy = (
+                        weight_noisy * self.prune_mask.data
+                    )  ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
                 if enable_ste:
                     weight = STE.apply(
                         weight, weight_noisy
                     )  # cut off gradient for weight_noisy, only flow through weight
                 else:
                     weight = weight_noisy
-                self.noisy_phase = phase # TODO: to DEBUG
+                self.noisy_phase = phase  # TODO: to DEBUG
 
         elif self.mode == "phase":
             if self.w_bit < 16:
