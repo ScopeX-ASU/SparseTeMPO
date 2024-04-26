@@ -334,6 +334,7 @@ class DSTScheduler2(nn.Module):
         self.survival = {}
         self.pruned_number = {}
         self.params = {}
+        self.layers = {}
 
     """
     Basic
@@ -361,6 +362,7 @@ class DSTScheduler2(nn.Module):
                     self.masks[name_cur] = MultiMask(
                         {"elem_mask": m.weight.shape}, device=self.device
                     )
+                    self.layers[name_cur] = m
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
@@ -500,6 +502,7 @@ class DSTScheduler2(nn.Module):
             biases = [biases] * int(np.log2(self.modules[0].conv_cfg["miniblock"][-1]))
         self.splitter_biases = [b / 180 * np.pi for b in biases]
 
+    
     def cal_ports_power(self, ports_array: Tensor) -> Tensor:
         ## ports_array: [#combinations, array_length] bool mask representing the sparsity pattern
         ## return: [#combinations] power of each sparsity pattern
@@ -543,15 +546,24 @@ class DSTScheduler2(nn.Module):
             #     .mul_(2)
             #     .sub_(np.pi / 2))
             # print(delta_phi)
-            p = (
-                ratios.sqrt_()
-                .acos()
-                .mul_(2)
-                .sub_(self.splitter_biases[level])
-                .abs_()
-                .mul_(self.pi_shift_power / np.pi)
-                .sum(dim=sum_dims)
-            )  # [#combinations]
+            angle = (
+                ratios.sqrt_() # \in [0, 1]
+                .acos() # \in [pi/2, 0]
+                .mul_(2) # \in [pi, 0]
+                .sub_(self.splitter_biases[level]) # if bias=pi/2, then \in [pi/2, -pi/2]
+            )
+            ## use crosstalk scheduler to compute the power with fitted curve of simulation data
+            ## here we make sure angle is in the range of [-pi/2, pi/2]
+            p = self.modules[0].crosstalk_scheduler.get_MZI_power(angle.data, reduction="none").sum(dim=sum_dims)
+            # p = (
+            #     ratios.sqrt_()
+            #     .acos()
+            #     .mul_(2)
+            #     .sub_(self.splitter_biases[level])
+            #     .abs_()
+            #     .mul_(self.pi_shift_power / np.pi)
+            #     .sum(dim=sum_dims)
+            # )  # [#combinations]
             # p = (
             #     ratios.mul_(-2).add_(1)
             #     .asin_()
@@ -796,11 +808,13 @@ class DSTScheduler2(nn.Module):
     ) -> float:
         return (mask_length - empty_cols) * (HDAC_power)
 
-    # def find_max_min_power_from_mask(self, mode="structure" TIA_power, ADC_power):
-    #     if mode != "structure":
-    #         raise ValueError("Not structure pruning, can't calc power from here")
-
-    #     for name, mask in self.masks.items():
+    def calc_weight_MZI_power(self, name: str, mask: MultiMask) -> float:
+        layer = self.layers[name]
+        weight = self.params[name].data
+        with torch.no_grad():
+            return layer.calc_weight_MZI_power(weight * mask.data, src="weight", reduction="none") # [p,q,r,c,k1,k2]
+        
+            
 
     def init_death_rate(self, death_rate, pruning_type="unstructure"):
         if pruning_type == "unstructure":
