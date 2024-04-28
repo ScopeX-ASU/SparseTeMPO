@@ -502,7 +502,6 @@ class DSTScheduler2(nn.Module):
             biases = [biases] * int(np.log2(self.modules[0].conv_cfg["miniblock"][-1]))
         self.splitter_biases = [b / 180 * np.pi for b in biases]
 
-    
     def cal_ports_power(self, ports_array: Tensor) -> Tensor:
         ## ports_array: [#combinations, array_length] bool mask representing the sparsity pattern
         ## return: [#combinations] power of each sparsity pattern
@@ -547,14 +546,20 @@ class DSTScheduler2(nn.Module):
             #     .sub_(np.pi / 2))
             # print(delta_phi)
             angle = (
-                ratios.sqrt_() # \in [0, 1]
-                .acos() # \in [pi/2, 0]
-                .mul_(2) # \in [pi, 0]
-                .sub_(self.splitter_biases[level]) # if bias=pi/2, then \in [pi/2, -pi/2]
+                ratios.sqrt_()  # \in [0, 1]
+                .acos()  # \in [pi/2, 0]
+                .mul_(2)  # \in [pi, 0]
+                .sub_(
+                    self.splitter_biases[level]
+                )  # if bias=pi/2, then \in [pi/2, -pi/2]
             )
             ## use crosstalk scheduler to compute the power with fitted curve of simulation data
             ## here we make sure angle is in the range of [-pi/2, pi/2]
-            p = self.modules[0].crosstalk_scheduler.get_MZI_power(angle.data, reduction="none").sum(dim=sum_dims)
+            p = (
+                self.modules[0]
+                .crosstalk_scheduler.get_MZI_power(angle.data, reduction="none")
+                .sum(dim=sum_dims)
+            )
             # p = (
             #     ratios.sqrt_()
             #     .acos()
@@ -812,9 +817,9 @@ class DSTScheduler2(nn.Module):
         layer = self.layers[name]
         weight = self.params[name].data
         with torch.no_grad():
-            return layer.calc_weight_MZI_power(weight * mask.data, src="weight", reduction="none") # [p,q,r,c,k1,k2]
-        
-            
+            return layer.calc_weight_MZI_power(
+                weight * mask.data, src="weight", reduction="sum"
+            ).item()  # [p,q,r,c,k1,k2]
 
     def init_death_rate(self, death_rate, pruning_type="unstructure"):
         if pruning_type == "unstructure":
@@ -1633,98 +1638,156 @@ class DSTScheduler2(nn.Module):
                 return mask
 
             ## till this point, we know self.death_opts = ["crosstalk"]
-            best_crosstalk_gain = float("-inf")
-            best_row_mask = None
-            for i, indices in enumerate(
-                combinations(range(num_row_select_candidates), num_row_select)
-            ):
-                if i >= self.max_combinations:
-                    break
 
-                indices = torch.tensor(indices)
-                selected_row_indices_cand = tuple(
-                    row_index[indices] for row_index in selected_row_indices
-                )
-
-                if DEBUG:
-                    print(f"-----------------\niter {i}")
-                    print(f"selected indices", indices)
-                    print(f"selected row indices", selected_row_indices_cand)
-                ## check crosstalk score for this combination
-                ## crosstalk can be calculated based on its index along k1 dimension
-
-                ## first try to prune rows in a cloned row_mask
-                row_mask = mask["row_mask"].clone()
-                row_mask[selected_row_indices_cand] = 0 if death else 1
-
-                total_crosstalk_gain = 0
-                ## after pruning, calculate crosstalk gain on affected row_masks
-                affected_mask_indices = set()  # use set to avoid duplicate indices
-                for row_id in range(num_row_select):
-                    affected_mask_indices.add(
-                        (
-                            selected_row_indices_cand[0][row_id].item(),  # p
-                            selected_row_indices_cand[1][row_id].item(),  # q
-                            selected_row_indices_cand[2][row_id].item(),  # r
+            old_layer_mzi_power = self.calc_weight_MZI_power(name, mask)
+            def obj_fn(
+                opt: str,
+                mask_temp: MultiMask,
+                affected_mask_indices: Tuple,
+            ) -> float:
+                # affected_mask_indices: [(p, q, r), (p,q,r), ..., (p,q,r)]
+                if opt == "crosstalk":
+                    gain = sum(
+                        self.calc_crosstalk_score(
+                            mask_temp["row_mask"][p, q, r, 0, :, 0], is_col=False
                         )
+                        - self.calc_crosstalk_score(
+                            mask["row_mask"][p, q, r, 0, :, 0], is_col=False
+                        )
+                        for (p, q, r) in affected_mask_indices
+                    )
+                elif opt == "power":
+
+                    gain = old_layer_mzi_power - self.calc_weight_MZI_power(
+                        name, mask_temp
+                    )
+                else:
+                    gain = 0
+                return gain
+
+            for opt in opts:  # search for each optimization metric
+                if len(search_range) == 1:
+                    break  # only solution left, no need to search
+                best_gain = float("-inf")
+                selected_range = []
+                best_row_masks = []  # can have multiple best solutions
+
+                for i, indices in enumerate(
+                    combinations(range(num_row_select_candidates), num_row_select)
+                ):
+                    if i >= self.max_combinations:
+                        break
+
+                    indices = torch.tensor(indices)
+                    selected_row_indices_cand = tuple(
+                        row_index[indices] for row_index in selected_row_indices
                     )
 
-                for mask_indices in affected_mask_indices:
-                    gain = self.calc_crosstalk_score(
-                        row_mask[
-                            mask_indices[0],
-                            mask_indices[1],
-                            mask_indices[2],
-                            0,
-                            :,  # k1
-                            0,
-                        ],
-                        is_col=False,
-                    ) - self.calc_crosstalk_score(
-                        mask["row_mask"][
-                            mask_indices[0],
-                            mask_indices[1],
-                            mask_indices[2],
-                            0,
-                            :,  # k1
-                            0,
-                        ],
-                        is_col=False,
-                    )
-                    total_crosstalk_gain += gain
                     if DEBUG:
-                        print(
-                            "crosstalk gain:",
-                            gain,
-                            "from",
-                            mask["row_mask"][
-                                mask_indices[0],
-                                mask_indices[1],
-                                mask_indices[2],
-                                0,
-                                :,  # k1
-                                0,
-                            ].long(),
-                            "to",
-                            row_mask[
-                                mask_indices[0],
-                                mask_indices[1],
-                                mask_indices[2],
-                                0,
-                                :,  # k1
-                                0,
-                            ].long(),
+                        print(f"-----------------\niter {i}")
+                        print(f"selected indices", indices)
+                        print(f"selected row indices", selected_row_indices_cand)
+                    ## check crosstalk score for this combination
+                    ## crosstalk can be calculated based on its index along k1 dimension
+
+                    ## first try to prune rows in a cloned row_mask
+                    mask_temp = mask.clone()
+                    row_mask = mask_temp["row_mask"]
+                    row_mask[selected_row_indices_cand] = 0 if death else 1
+
+                    ## after pruning, calculate crosstalk gain on affected row_masks
+                    affected_mask_indices = set()  # use set to avoid duplicate indices
+                    for row_id in range(num_row_select):
+                        affected_mask_indices.add(
+                            (
+                                selected_row_indices_cand[0][row_id].item(),  # p
+                                selected_row_indices_cand[1][row_id].item(),  # q
+                                selected_row_indices_cand[2][row_id].item(),  # r
+                            )
                         )
 
-                if total_crosstalk_gain > best_crosstalk_gain:
-                    best_crosstalk_gain = total_crosstalk_gain
-                    best_row_mask = row_mask
-                if DEBUG:
-                    print(f"affected_mask_indices", affected_mask_indices)
-                    print(f"total_crosstalk_gain", total_crosstalk_gain)
-                    print(f"best_crosstalk_gain", best_crosstalk_gain)
+                    # for mask_indices in affected_mask_indices:
 
-            mask["row_mask"] = best_row_mask
+                    # higher the better
+                    # gain = self.calc_crosstalk_score(
+                    #     row_mask[
+                    #         mask_indices[0],
+                    #         mask_indices[1],
+                    #         mask_indices[2],
+                    #         0,
+                    #         :,  # k1
+                    #         0,
+                    #     ],
+                    #     is_col=False,
+                    # ) - self.calc_crosstalk_score(
+                    #     mask["row_mask"][
+                    #         mask_indices[0],
+                    #         mask_indices[1],
+                    #         mask_indices[2],
+                    #         0,
+                    #         :,  # k1
+                    #         0,
+                    #     ],
+                    #     is_col=False,
+                    # )
+                    affected_mask_indices = tuple(affected_mask_indices)
+                    gain = obj_fn(
+                        opt=opt,
+                        mask_temp=mask_temp,
+                        affected_mask_indices=affected_mask_indices,
+                    )
+                    # total_crosstalk_gain += gain
+                    # if DEBUG:
+                    #     print(
+                    #         "crosstalk gain:",
+                    #         gain,
+                    #         "from",
+                    #         mask["row_mask"][
+                    #             mask_indices[0],
+                    #             mask_indices[1],
+                    #             mask_indices[2],
+                    #             0,
+                    #             :,  # k1
+                    #             0,
+                    #         ].long(),
+                    #         "to",
+                    #         row_mask[
+                    #             mask_indices[0],
+                    #             mask_indices[1],
+                    #             mask_indices[2],
+                    #             0,
+                    #             :,  # k1
+                    #             0,
+                    #         ].long(),
+                    #     )
+
+                    if gain > best_gain:
+                        best_gain = gain
+                        best_row_masks = [row_mask]
+                        selected_range = [indices]
+                    elif gain == best_gain:
+                        best_row_masks.append(row_mask)
+                        selected_range.append(indices)
+                    if DEBUG:
+                        print(f"-----------------\niter {i} {opt}")
+                        print(f"selected indices", indices)
+                        print(f"selected row indices", selected_row_indices_cand)
+                        print(f"gain", gain)
+                        print(f"best gain", best_gain)
+                        print(f"best row masks", len(best_row_masks))
+
+                # shrink the search range to the selected range
+                search_range = selected_range
+                if DEBUG:
+                    print(f"best gain {opt}", best_gain, len(best_row_masks))
+                    print(f"search_range", search_range)
+            if DEBUG:
+                print(
+                    f"best row masks final",
+                    len(best_row_masks),
+                    type(best_row_masks[0]),
+                )
+            mask["row_mask"] = best_row_masks[0]
             return mask
         elif self.group == "block":
             ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
@@ -1807,14 +1870,18 @@ class DSTScheduler2(nn.Module):
                 combinations(range(num_col_select_candidates), num_col_select)
             )
 
+            old_layer_mzi_power = self.calc_weight_MZI_power(name, mask)
+
             def obj_fn(
-                opt: str, col_mask: Tensor, affected_mask_indices: Tuple
+                opt: str,
+                mask_temp: MultiMask,
+                affected_mask_indices: Tuple,
             ) -> float:
                 # affected_mask_indices: [(p, q, c), (p,q,c), ..., (p,q,c)]
                 if opt == "crosstalk":
                     gain = sum(
                         self.calc_crosstalk_score(
-                            col_mask[p, q, 0, c, 0, :], is_col=True
+                            mask_temp["col_mask"][p, q, 0, c, 0, :], is_col=True
                         )
                         - self.calc_crosstalk_score(
                             mask["col_mask"][p, q, 0, c, 0, :], is_col=True
@@ -1829,8 +1896,13 @@ class DSTScheduler2(nn.Module):
                         self.cal_ports_power(
                             mask["col_mask"][ps, qs, 0, cs, 0, :]
                         ).sum()
-                        - self.cal_ports_power(col_mask[ps, qs, 0, cs, 0, :]).sum()
+                        - self.cal_ports_power(
+                            mask_temp["col_mask"][ps, qs, 0, cs, 0, :]
+                        ).sum()
                     ).item()
+                    gain += old_layer_mzi_power - self.calc_weight_MZI_power(
+                        name, mask_temp
+                    )
                 else:
                     gain = 0
                 return gain  # higher the better
@@ -1854,7 +1926,8 @@ class DSTScheduler2(nn.Module):
                     ## crosstalk can be calculated based on its index along k2 dimension
 
                     ## first try to prune cols in a cloned col_mask
-                    col_mask = mask["col_mask"].clone()
+                    mask_temp = mask.clone()
+                    col_mask = mask_temp["col_mask"]
                     col_mask[selected_col_indices_cand] = 0 if death else 1
 
                     ## after pruning, calculate gain on affected row_masks
@@ -1870,7 +1943,7 @@ class DSTScheduler2(nn.Module):
                     affected_mask_indices = tuple(affected_mask_indices)
                     gain = obj_fn(
                         opt=opt,
-                        col_mask=col_mask,
+                        mask_temp=mask_temp,
                         affected_mask_indices=affected_mask_indices,
                     )
 
@@ -2128,13 +2201,13 @@ class DSTScheduler2(nn.Module):
         # Number of elements turned off by one row; [depth] shape
         row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
 
-        col_turn_off_average = col_turn_off_elements.sum().divide(
-            col_turn_off_elements.shape[0]
-        ).item()
+        col_turn_off_average = (
+            col_turn_off_elements.sum().divide(col_turn_off_elements.shape[0]).item()
+        )
 
-        row_turn_off_average = row_turn_off_elements.sum().divide(
-            row_turn_off_elements.shape[0]
-        ).item()
+        row_turn_off_average = (
+            row_turn_off_elements.sum().divide(row_turn_off_elements.shape[0]).item()
+        )
 
         col_total_required_elements = (
             self.HDAC_power / (self.ADC_power + self.TIA_power + self.HDAC_power)
@@ -2152,7 +2225,16 @@ class DSTScheduler2(nn.Module):
             num_select=col_total_required_elements,
         )
 
-        real_turned_off_by_col = (((mask["col_mask"] == 1) & (mask_temp["col_mask"] == 0)).reshape(p*q, c*k2).sum(-1) * col_turn_off_elements).sum().item()
+        real_turned_off_by_col = (
+            (
+                ((mask["col_mask"] == 1) & (mask_temp["col_mask"] == 0))
+                .reshape(p * q, c * k2)
+                .sum(-1)
+                * col_turn_off_elements
+            )
+            .sum()
+            .item()
+        )
 
         row_total_required_elements = num_select - real_turned_off_by_col
         row_required_weight = weight.data * mask_temp
