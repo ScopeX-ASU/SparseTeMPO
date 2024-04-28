@@ -228,30 +228,22 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         )
         return MAC
 
-    def cycles(self, x_size=None, probe: bool = True, num_vectors=None) -> int:
-        if num_vectors is None:
-            if probe:
-                num_vectors = self.miniblock
-            else:
-                input_H, input_W = x_size[-2], x_size[-1]
-                output_H = (
-                    (input_H - self.kernel_size[0] + 2 * self.padding[0])
-                    // self.stride[0]
-                ) + 1
-                output_W = (
-                    (input_W - self.kernel_size[1] + 2 * self.padding[1])
-                    // self.stride[1]
-                ) + 1
-                num_vectors = output_H * output_W
+    def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
+        bs, input_H, input_W = x_size[0], x_size[-2], x_size[-1]
+        output_H = (
+            (input_H - self.kernel_size[0] + 2 * self.padding[0]) // self.stride[0]
+        ) + 1
+        output_W = (
+            (input_W - self.kernel_size[1] + 2 * self.padding[1]) // self.stride[1]
+        ) + 1
+        num_cycles_per_block = output_H * output_W * bs
 
-        R, C, _, _ = self.phase_variation_scheduler.size
-        P, Q = self.grid_dim_y, self.grid_dim_x
-        if self._enable_remap and hasattr(self, "max_workload_assigned"):
-            ## same times the accelerator needs multiple cycles to finish the workload
-            cycles = self.max_workload_assigned.sum().item() * num_vectors
-        else:
-            cycles = int(np.ceil(P / R) * np.ceil(Q / C) * num_vectors)
-        return cycles
+        k1, k2 = self.miniblock[-2:]
+        num_blocks = int(
+            np.ceil(self.out_channels / (R * k1))
+            * np.ceil(self.in_channels_flat / (C * k2))
+        )
+        return num_cycles_per_block, num_blocks * num_cycles_per_block
 
     def get_output_dim(self, img_height: int, img_width: int) -> _size:
         h_out = (

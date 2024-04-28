@@ -555,11 +555,7 @@ class DSTScheduler2(nn.Module):
             )
             ## use crosstalk scheduler to compute the power with fitted curve of simulation data
             ## here we make sure angle is in the range of [-pi/2, pi/2]
-            p = (
-                self.modules[0]
-                .crosstalk_scheduler.get_MZI_power(angle.data, reduction="none")
-                .sum(dim=sum_dims)
-            )
+            p = self.modules[0].crosstalk_scheduler.calc_MZI_power(angle.data, reduction="none").sum(dim=sum_dims)
             # p = (
             #     ratios.sqrt_()
             #     .acos()
@@ -1012,6 +1008,8 @@ class DSTScheduler2(nn.Module):
     def _structure_init_power_crosstalk(
         self, density: float = 0.05, opts: List = ["power", "crosstalk"]
     ) -> None:
+        if density == 1:
+            return
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
                 row_num = k1 = self.params[name].shape[-2]

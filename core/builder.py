@@ -236,7 +236,11 @@ def make_model(
     else:
         model = None
         raise NotImplementedError(f"Not supported model name: {model_cfg.name}")
-    
+    in_channels = configs.dataset.in_channels
+    img_height = configs.dataset.img_height
+    img_width = configs.dataset.img_width
+    ## dummy input to initialize quantizer stats
+    model(torch.randn(1, in_channels, img_height, img_width, device=device))
     crosstalk_scheduler = CrosstalkScheduler(
         interv_h=configs.noise.crosstalk_scheduler.interv_h,
         interv_v=configs.noise.crosstalk_scheduler.interv_v,
