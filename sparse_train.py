@@ -278,8 +278,6 @@ def main() -> None:
             int(configs.run.random_state) if int(configs.run.deterministic) else None
         ),
     )
-    ## dummy forward to initialize quantizer
-    model(next(iter(test_loader))[0].to(device))
     lg.info(model)
 
     optimizer = builder.make_optimizer(

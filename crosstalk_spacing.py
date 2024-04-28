@@ -409,29 +409,37 @@ def main() -> None:
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
         acc_list = []
+        avg_power_list = []
         for interv_s in interv_s_range:
             for interv_h_s in interv_h_s_range:
                 interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
                 model.crosstalk_scheduler.set_spacing(
                     interv_s=interv_s, interv_h=interv_h
                 )
-                acc = test(
-                    model,
-                    test_loader,
-                    0,
-                    criterion,
-                    [],
-                    [],
-                    device,
-                    mixup_fn=None,
-                    fp16=False,
-                )
+                # acc = test(
+                #     model,
+                #     test_loader,
+                #     0,
+                #     criterion,
+                #     [],
+                #     [],
+                #     device,
+                #     mixup_fn=None,
+                #     fp16=False,
+                # )
+                acc = 0
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
+            next(iter(test_loader))[0].shape
+            avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=8, C=8, freq=1)[-2])
         acc_list = np.array(acc_list)
-        print(acc_list)
+        avg_power_list = np.array(avg_power_list)
+        print(acc_list.tolist())
+        print(avg_power_list.tolist())
 
-        np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
+        # np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
+        # np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_matrix.csv",  acc_list.reshape([-1, 13]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
         """
 [[ 7.,    1.,   85.89],
  [ 7.,    3.,   89.87],
