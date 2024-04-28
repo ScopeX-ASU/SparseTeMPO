@@ -175,22 +175,16 @@ class TeMPOBlockLinear(ONNBaseLayer):
         MAC = self.in_features_pad * self.out_features_pad
         return MAC
 
-    def cycles(self, x_size=None, probe: bool = True, num_vectors=None) -> int:
-        if num_vectors is None:
-            if probe:
-                num_vectors = self.miniblock
-            else:
-                num_vectors = 1
-        R, C, _, _ = self.phase_variation_scheduler.size
-        P, Q = self.grid_dim_y, self.grid_dim_x
+    def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
+        bs = x_size[0]
 
-        if self._enable_remap and hasattr(self, "max_workload_assigned"):
-            ## same times the accelerator needs multiple cycles to finish the workload
-            cycles = self.max_workload_assigned.sum().item() * num_vectors
-        else:
-            cycles = int(np.ceil(P / R) * np.ceil(Q / C) * num_vectors)
+        num_cycles_per_block = bs
 
-        return cycles
+        k1, k2 = self.miniblock[-2:]
+        num_blocks = int(
+            np.ceil(self.out_features / (R * k1)) * np.ceil(self.in_features / (C * k2))
+        )
+        return num_cycles_per_block, num_blocks * num_cycles_per_block
 
     def forward(self, x: Tensor) -> Tensor:
         if self.in_bit < 16:

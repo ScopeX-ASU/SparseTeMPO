@@ -194,57 +194,77 @@ class TeMPO_Base(nn.Module):
 
     def set_phase_variation(self, flag: bool = True):
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_phase_variation"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_phase_variation"
+            ):
                 layer.set_phase_variation(flag)
 
     def set_output_noise(self, noise_std: float = 0.0):
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_output_noise"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_output_noise"
+            ):
                 layer.set_output_noise(noise_std)
 
     def set_global_temp_drift(self, flag: bool = True):
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_global_temp_drift"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_global_temp_drift"
+            ):
                 layer.set_global_temp_drift(flag)
 
     def set_light_redist(self, flag: bool = True):
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_light_redist"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_light_redist"
+            ):
                 layer.set_light_redist(flag)
-    
+
     def set_power_gating(self, flag: bool = True):
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_power_gating"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_power_gating"
+            ):
                 layer.set_power_gating(flag)
-                
+
     def set_gamma_noise(
         self, noise_std: float = 0.0, random_state: Optional[int] = None
     ) -> None:
         self.gamma_noise_std = noise_std
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_gamma_noise"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_gamma_noise"
+            ):
                 layer.set_gamma_noise(noise_std, random_state=random_state)
 
     def set_crosstalk_noise(self, flag: bool = True) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_crosstalk_noise"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_crosstalk_noise"
+            ):
                 layer.set_crosstalk_noise(flag)
 
     def set_weight_noise(self, noise_std: float = 0.0) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_weight_noise"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_weight_noise"
+            ):
                 layer.set_weight_noise(noise_std)
 
     def set_weight_bitwidth(self, w_bit: int) -> None:
         self.w_bit = w_bit
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_weight_bitwidth"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_weight_bitwidth"
+            ):
                 layer.set_weight_bitwidth(w_bit)
 
     def set_input_bitwidth(self, in_bit: int) -> None:
         self.in_bit = in_bit
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "set_input_bitwidth"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_input_bitwidth"
+            ):
                 layer.set_input_bitwidth(in_bit)
 
     def load_parameters(self, param_dict: Dict[str, Dict[str, Tensor]]) -> None:
@@ -270,17 +290,23 @@ class TeMPO_Base(nn.Module):
 
     def enable_fast_forward(self) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "enable_fast_forward"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "enable_fast_forward"
+            ):
                 layer.enable_fast_forward()
 
     def disable_fast_forward(self) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "disable_fast_forward"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "disable_fast_forward"
+            ):
                 layer.disable_fast_forward()
 
     def sync_parameters(self, src: str = "weight") -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "sync_parameters"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "sync_parameters"
+            ):
                 layer.sync_parameters(src=src)
 
     def build_weight(self) -> None:
@@ -290,7 +316,9 @@ class TeMPO_Base(nn.Module):
 
     def print_parameters(self) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "print_parameters"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "print_parameters"
+            ):
                 layer.print_parameters()
 
     def gen_mixedtraining_mask(
@@ -309,13 +337,16 @@ class TeMPO_Base(nn.Module):
 
     def switch_mode_to(self, mode: str) -> None:
         for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(layer, "switch_mode_to"):
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "switch_mode_to"
+            ):
                 layer.switch_mode_to(mode)
 
     def get_power(self, mixedtraining_mask: Optional[Tensor] = None) -> float:
         power = sum(
             layer.get_power(mixedtraining_mask[layer_name])
-            for layer_name, layer in self.fc_layers.items() if hasattr(layer, "get_power")
+            for layer_name, layer in self.fc_layers.items()
+            if hasattr(layer, "get_power")
         )
         return power
 
@@ -354,35 +385,27 @@ class TeMPO_Base(nn.Module):
             if isinstance(layer, self._conv_linear):
                 layer._ideal_weight = layer.weight.detach().clone()
 
-    def cycles(self, x_size):
+    def cycles(self, x_size, R: int = 8, C: int = 8) -> float:
         x = torch.randn(x_size, device=self.device)
         self.eval()
 
-        def hook(m, inp, out):
+        def hook(m, inp):
             m._input_shape = inp[0].shape
 
         handles = []
         for layer in self.modules():
             if isinstance(layer, self._conv_linear):
-                handle = layer.register_forward_hook(hook)
+                handle = layer.register_forward_pre_hook(hook)
                 handles.append(handle)
         with torch.no_grad():
             self.forward(x)
-        cycles = 0
-        for layer in self.modules():
+        cycles = {} # name: (cycles_per_block, total_cycles)
+        for name, layer in self.named_modules():
             if isinstance(layer, self._conv_linear):
-                cycles += layer.cycles(layer._input_shape, probe=False)
+                cycles[name] = layer.cycles(layer._input_shape, R=R, C=C)
         for handle in handles:
             handle.remove()
-        return cycles
-
-    def probe_cycles(self, num_vectors=None):
-        cycles = 0
-        for layer in self.modules():
-            if isinstance(layer, self._conv_linear):
-                ### it considers remapping already
-                cycles += layer.cycles(probe=True, num_vectors=num_vectors)
-        return cycles
+        return np.sum(list(cycles.values())), cycles
 
     def gen_sparsity_mask(self, sparsity=1.0, mode="topk"):
         # top sparsity% will be calibrated
@@ -723,6 +746,46 @@ class TeMPO_Base(nn.Module):
         for layer in self.modules():
             if isinstance(layer, self._conv_linear):
                 layer.set_enable_remap(enable_remap)
+
+    def calc_weight_MZI_energy(
+        self,
+        input_size=[1, 3, 32, 32],
+        R: int = 8,
+        C: int = 8,
+        freq: float=1.0, # GHz
+    ) -> None:
+        ## return total energy in mJ and power mW breakdown
+
+        total_cycles, cycle_dict = self.cycles(input_size, R=R, C=C)
+        power_dict = {}
+        energy_dict = {}
+        with torch.no_grad():
+            for name, layer in self.named_modules():
+                if isinstance(layer, self._conv_linear) and hasattr(
+                    layer, "calc_weight_MZI_power"
+                ):
+                    power = layer.calc_weight_MZI_power(
+                        src="weight", reduction="none"
+                    )  # [p,q,r,c,k1,k1] -> 1 # mW
+
+                    ## calculate energy
+                    ## (P1*cyc_per_clk + P2*cyc_per_clk + ... + P_{RC} * cyc_per_clk) / freq
+                    ## (P1+P2+P3+...+P_{RC}) * cyc_per_clock / freq
+                    ## sum(P) * cyc_per_clock / freq
+                    power = power.sum().item()
+                    power_dict[name] = power
+                    cycles_per_block = cycle_dict[name][0]
+                    energy_dict[name] = power * cycles_per_block / freq / 1e9 # mJ
+        total_energy = np.sum(list(energy_dict.values()))
+        avg_power = total_energy / (total_cycles / freq / 1e9)
+        return (
+            total_energy, #mJ
+            energy_dict, # layer-wise energy breakdown
+            total_cycles, # total cycles
+            cycle_dict, # layer-wise cycle breakdown
+            avg_power, # average power mW
+            power_dict, # layer-wise power breakdown
+        )
 
     def train(self, mode=True):
         super().train(mode)

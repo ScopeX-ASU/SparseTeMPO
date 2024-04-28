@@ -791,12 +791,12 @@ class CrosstalkScheduler(object):
 
     def calc_MZI_power(self, delta_phi: Tensor, reduction: str = "sum") -> Tensor:
         ## delta_phi: phase difference of an MZI, input must be -pi/2 to pi/2
-        interv_s = max(7, min(self.interv_s, 25))
+        interv_s = max(self.ps_width+1, min(self.interv_s, 25))
         power = polynomial2(
             delta_phi.abs(),
             interv_s,
             self.power_coefficients,
-        )
+        ).relu() # nonnegative power
         if reduction == "sum":
             return power.mean()
         elif reduction == "none":
