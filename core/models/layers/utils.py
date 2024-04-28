@@ -14,6 +14,7 @@ from typing import Callable, List, Optional, Tuple, Union
 
 import einops
 import numpy as np
+import pandas as pd
 import torch
 import tqdm
 from pyutils.compute import (
@@ -26,6 +27,7 @@ from pyutils.compute import (
 from pyutils.general import logger
 from pyutils.quant.lsq import get_default_kwargs_q, grad_scale, round_pass
 from pyutils.torch_train import set_torch_deterministic
+from scipy.interpolate import LinearNDInterpolator
 from torch import Tensor, nn
 from torch.nn import Parameter
 from torch.types import Device, _size
@@ -555,6 +557,103 @@ class GlobalTemperatureScheduler(object):
         return delta_Phi  # [P, Q, 1, k]
 
 
+class MZIPowerEvaluator(object):
+    def __init__(
+        self,
+        csv_file: str = "./unitest/MZIPower.csv",
+        interv_s: int = 10,
+        ps_width: int = 6,
+        device="cuda:0",
+    ):
+        self.ps_width = ps_width
+        self.device = device
+        self.set_spacing(interv_s)
+        self._fit_MZI_power_interp(csv_file)
+
+    def set_spacing(self, interv_s: int):
+        self.interv_s = interv_s
+
+    def _fit_MZI_power_interp(self, csv_file: str = "./unitest/MZIPower.csv"):
+        df = pd.read_csv(csv_file)
+        # end = 22
+        end = -5  # 7um at P_pi
+        power = df.iloc[2:end, 1].astype("float32").to_numpy()
+        power = np.concatenate([np.array([0]), power])
+        delta_phases = []
+        distances = []
+        for i in range(1, 13):
+            delta_phi = df.iloc[2:end, 1 + 4 * i].astype("float32").to_numpy() - (
+                df.iloc[2:end, 4 * i].astype("float32").to_numpy()
+            )
+            # when delta_phi=0, power must be 0
+            delta_phi = np.concatenate([np.array([0]), delta_phi])
+            distance = (
+                df.iloc[0:1, i * 4 - 2]
+                .astype("float32")
+                .repeat(len(delta_phi))
+                .to_numpy()
+            )
+            delta_phases.append(delta_phi)
+            distances.append(distance)
+        # print(power)
+        # print(delta_phases)
+        ideal_distance = distances.pop(-1)
+        ideal_delta_phases = delta_phases.pop(-1)
+        # ideal_distance = distances[-1]
+        # ideal_delta_phases = delta_phases[-1]
+        ## delta phase cannot be higher then ideal case
+        ## larger distance must have larger delta phase
+        for i in range(1, len(delta_phases)):
+            delta_phases[i] = np.minimum(
+                np.maximum(delta_phases[i - 1], delta_phases[i]), ideal_delta_phases
+            )
+        X_data = np.stack(
+            [np.concatenate(delta_phases, 0), np.concatenate(distances, 0)], -1
+        )
+        # print(X_data)
+        Y_data = np.concatenate([power] * len(delta_phases), 0)
+        # print(Y_data)
+
+        self._MZI_power_interp = LinearNDInterpolator(X_data, Y_data)
+        return self._MZI_power_interp
+
+    def calc_MZI_power(self, delta_phi: Tensor, reduction: str = "sum") -> Tensor:
+        ## delta_phi: phase difference of an MZI, input must be -pi/2 to pi/2
+        interv_s = max(self.ps_width + 1, min(self.interv_s, 25))
+        if self._MZI_power_interp is None:
+            self._fit_MZI_power_interp()
+        delta_phi_shape = delta_phi.shape
+        delta_phi = delta_phi.flatten()
+        X_data = (
+            torch.stack(
+                [delta_phi.abs(), torch.ones_like(delta_phi).fill_(interv_s)], -1
+            )
+            .cpu()
+            .numpy()
+        )
+        # print(X_data.shape)
+        # exit(0)
+        # print(X_data)
+        power = torch.from_numpy(
+            self._MZI_power_interp(X_data).reshape(delta_phi_shape)
+        ).to(
+            self.device
+        )  # [p,q,r,c,k1,k2]
+        # print(power)
+        # exit(0)
+        # power = polynomial2(
+        #     delta_phi.abs(),
+        #     interv_s,
+        #     self.power_coefficients,
+        # ).relu() # nonnegative power
+        if reduction == "sum":
+            return power.mean()
+        elif reduction == "none":
+            return power
+        else:
+            raise NotImplementedError
+
+
 class CrosstalkScheduler(object):
     def __init__(
         self,
@@ -594,6 +693,9 @@ class CrosstalkScheduler(object):
         )
         self.ps_width = ps_width
         self.crosstalk_exp_coupling_factor = crosstalk_exp_coupling_factor
+        self.mzi_power_evaluator = MZIPowerEvaluator(
+            interv_s=interv_s, ps_width=ps_width, device=device
+        )
         self.set_spacing(interv_h, interv_v, interv_s)
         self.device = device
         self.crosstalk_matrix = None
@@ -608,6 +710,7 @@ class CrosstalkScheduler(object):
         self.interv_h = interv_h or self.interv_h
         self.interv_v = interv_v or self.interv_v
         self.interv_s = interv_s or self.interv_s
+        self.mzi_power_evaluator.set_spacing(self.interv_s)
         assert (
             self.interv_h >= self.interv_s + self.ps_width
         ), f"Horizontal spacing ({self.interv_h}) should be larger than the width of an MZI ({self.interv_s}+{self.ps_width}={self.interv_s+self.ps_width})"
@@ -790,19 +893,8 @@ class CrosstalkScheduler(object):
         return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
     def calc_MZI_power(self, delta_phi: Tensor, reduction: str = "sum") -> Tensor:
-        ## delta_phi: phase difference of an MZI, input must be -pi/2 to pi/2
-        interv_s = max(self.ps_width+1, min(self.interv_s, 25))
-        power = polynomial2(
-            delta_phi.abs(),
-            interv_s,
-            self.power_coefficients,
-        ).relu() # nonnegative power
-        if reduction == "sum":
-            return power.mean()
-        elif reduction == "none":
-            return power
-        else:
-            raise NotImplementedError
+        power = self.mzi_power_evaluator.calc_MZI_power(delta_phi, reduction)
+        return power
 
 
 class DeterministicCtx:
