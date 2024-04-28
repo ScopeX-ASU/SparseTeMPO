@@ -1,3 +1,9 @@
+'''
+Date: 2024-04-27 23:07:24
+LastEditors: Jiaqi Gu && jiaqigu@asu.edu
+LastEditTime: 2024-04-27 23:07:32
+FilePath: /SparseTeMPO/scripts/fmnist/cnn/train/test_crosstalk.py
+'''
 """
 Date: 2024-04-27 15:21:22
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
@@ -39,6 +45,7 @@ def task_launcher(args):
         "w",
     ) as wfid:
         exp = [
+            f"--run.batch_size=200",
             f"--optimizer.lr={lr}",
             f"--run.random_state={42}",
             f"--model.conv_cfg.w_bit={w_bit}",
@@ -49,7 +56,7 @@ def task_launcher(args):
             f"--model.conv_cfg.in_bit={in_bit}",
             f"--model.linear_cfg.in_bit={in_bit}",
             f"--checkpoint.resume={True}",
-            f"--checkpoint.restore_checkpoint=./checkpoint/fmnist/cnn/train/TeMPO_CNN_pretrain_lr-0.0020_wb-8_ib-8_cb-[8,8,8,8]_run-2_acc-92.00_epoch-18.pt",
+            f"--checkpoint.restore_checkpoint=./checkpoint/fmnist/cnn/train/TeMPO_CNN_pretrain_lr-0.0020_wb-8_ib-6_cb-[8,8,8,8]_run-4_acc-92.18_epoch-44.pt",
             f"--checkpoint.model_comment=pretrain_lr-{lr:.4f}_wb-{w_bit}_ib-{in_bit}_cb-[{','.join([str(i) for i in conv_block])}]_run-{id}",
         ]
         cmd = " ".join(pres + exp)
@@ -63,7 +70,7 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 8, 8, "magnitude", "gradient", "uniform", [8, 8, 8, 8], 1, 1),  # adam
+        (0.002, 8, 6, "magnitude", "gradient", "uniform", [8, 8, 8, 8], 2, 1),  # adam
     ]
     with Pool(10) as p:
         p.map(task_launcher, tasks)

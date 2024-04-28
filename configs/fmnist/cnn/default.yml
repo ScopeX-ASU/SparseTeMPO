@@ -58,6 +58,8 @@ noise:
   crosstalk_factor: 0
   random_state: 42
   weight_noise_std: 0.0
+  crosstalk_flag: False
+  noise_flag: False
 
 checkpoint:
   save_best_model_k: 3
