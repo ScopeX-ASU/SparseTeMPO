@@ -744,7 +744,7 @@ class ONNBaseLayer(nn.Module):
             * epsilon_matrix.shape[1]
         )  # Rk + R^3
         return self.row_ind, self.col_ind, cycles
-
+        
     def forward(self, x):
         raise NotImplementedError
 

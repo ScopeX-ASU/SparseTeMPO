@@ -36,6 +36,7 @@ quantize:
 noise:
   phase_noise_std: 0
   crosstalk_factor: 0.05
+  output_noise_std: 0
   random_state: 42
   crosstalk_scheduler:
     interv_h: 20

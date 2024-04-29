@@ -402,6 +402,7 @@ def main() -> None:
         
         model.set_noise_flag(True)
         model.set_crosstalk_noise(True)
+        model.set_output_noise(configs.noise.output_noise_std)
 
         interv_s_minax = [7, 25]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
@@ -417,17 +418,25 @@ def main() -> None:
                 model.crosstalk_scheduler.set_spacing(
                     interv_s=interv_s, interv_h=interv_h
                 )
-                acc = test(
-                    model,
-                    test_loader,
-                    0,
-                    criterion,
-                    [],
-                    [],
-                    device,
-                    mixup_fn=None,
-                    fp16=False,
-                )
+                if configs.noise.output_noise_std > 0:
+                    N = 3
+                else:
+                    N = 1
+                accs = []
+                for i in range(N):
+                    acc = test(
+                        model,
+                        test_loader,
+                        0,
+                        criterion,
+                        [],
+                        [],
+                        device,
+                        mixup_fn=None,
+                        fp16=False,
+                    )
+                    accs.append(acc)
+                acc = np.mean(accs)
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
             next(iter(test_loader))[0].shape

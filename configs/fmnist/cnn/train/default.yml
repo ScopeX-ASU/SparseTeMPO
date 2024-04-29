@@ -35,6 +35,7 @@ quantize:
 noise:
   phase_bias: 0
   phase_noise_std: 0
+  output_noise_std: 0
   gamma_noise_std: 0
   crosstalk_factor: 0
   random_state: 42

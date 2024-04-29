@@ -357,6 +357,26 @@ def plot_output_noise():
             {"row_mask": [layer.weight.shape[0], layer.weight.shape[1], layer.weight.shape[2], 1, layer.weight.shape[4], 1], 
             "col_mask": [layer.weight.shape[0], layer.weight.shape[1], 1, layer.weight.shape[3], 1, layer.weight.shape[5]]}, device=device
         )
+    crosstalk_scheduler = CrosstalkScheduler(
+        crosstalk_coupling_factor=[
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
+            1,
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor=[
+            0.2167267,
+            -0.12747211,
+        ],  # a * exp(b*x)
+        interv_h=9+6+5,
+        interv_v=120,
+        interv_s=9,
+        device=device,
+    )
+    layer.crosstalk_scheduler = crosstalk_scheduler
+    layer.set_crosstalk_noise(True)
     layer.prune_mask = mask
     layer.set_output_noise(0.001)
     nmae_nodist = []
@@ -415,7 +435,8 @@ def plot_output_noise():
         ax=ax,
         xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
         xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
-        yrange=[0, 0.151, 0.05],
+        yrange=[0.05, 0.151, 0.05],
+        ylimit=[0.05, 0.16],
         xformat="%.1f",
         yformat="%.2f",
         figscale=[0.65, 0.45 * 9.1 / 8],
@@ -443,7 +464,8 @@ def plot_output_noise():
         ax=ax,
         xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
         xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
-        yrange=[0, 0.151, 0.05],
+        yrange=[0.05, 0.151, 0.05],
+        ylimit=[0.05, 0.16],
         xformat="%.1f",
         yformat="%.2f",
         figscale=[0.65, 0.45 * 9.1 / 8],

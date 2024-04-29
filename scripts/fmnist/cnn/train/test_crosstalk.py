@@ -1,7 +1,7 @@
 '''
 Date: 2024-04-27 23:07:24
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2024-04-27 23:07:32
+LastEditTime: 2024-04-29 14:07:34
 FilePath: /SparseTeMPO/scripts/fmnist/cnn/train/test_crosstalk.py
 '''
 """
@@ -35,7 +35,7 @@ configs.load(config_file, recursive=True)
 
 
 def task_launcher(args):
-    lr, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, id, gpu_id = args
+    lr, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, ckpt, id, gpu_id = args
     pres = [f"export CUDA_VISIBLE_DEVICES={gpu_id};", "python3", script, config_file]
     with open(
         os.path.join(
@@ -53,10 +53,12 @@ def task_launcher(args):
             f"--model.dst_scheduler={None}",
             f"--dst_scheduler={None}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
+            f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.conv_cfg.in_bit={in_bit}",
             f"--model.linear_cfg.in_bit={in_bit}",
             f"--checkpoint.resume={True}",
-            f"--checkpoint.restore_checkpoint=./checkpoint/fmnist/cnn/train/TeMPO_CNN_pretrain_lr-0.0020_wb-8_ib-6_cb-[8,8,8,8]_run-4_acc-92.18_epoch-44.pt",
+            f"--checkpoint.restore_checkpoint={ckpt}",
+            f"--noise.output_noise_std=0.01",
             f"--checkpoint.model_comment=pretrain_lr-{lr:.4f}_wb-{w_bit}_ib-{in_bit}_cb-[{','.join([str(i) for i in conv_block])}]_run-{id}",
         ]
         cmd = " ".join(pres + exp)
@@ -70,7 +72,7 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 8, 6, "magnitude", "gradient", "uniform", [8, 8, 8, 8], 2, 1),  # adam
+        (0.002, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "./checkpoint/fmnist/cnn/train/TeMPO_CNN_pretrain_lr-0.0020_wb-8_ib-6_cb-[1,1,16,16]_crstlk-0_run-4_acc-92.15_epoch-18.pt", 4, 3),  # adam
     ]
     with Pool(10) as p:
         p.map(task_launcher, tasks)
