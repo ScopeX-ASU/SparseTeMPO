@@ -16,7 +16,7 @@ from core.models.layers.tempo_linear import TeMPOBlockLinear
 from core.models.layers.utils import CrosstalkScheduler, SparsityEnergyScheduler
 from core.utils import get_parameter_group, register_hidden_hooks
 from pyutils.plot import batch_plot
-
+from pyutils.torch_train import set_torch_deterministic
 
 def test_mode_switch():
     device = "cuda:0"
@@ -95,23 +95,47 @@ def test_crosstalk():
 
 def test_output_noise():
     device = "cuda:0"
+    set_torch_deterministic(0)
     layer = TeMPOBlockLinear(32, 32, miniblock=[4, 4, 4, 4], device=device)
     x = torch.randn(1, 32, device=device)
     y = layer(x)
     layer.set_output_noise(0.001)
     layer.set_noise_flag(True)
+    set_torch_deterministic(0)
     y2 = layer(x)
     nmae = torch.norm(y2 - y, p=1) / torch.norm(y, p=1)
-    print(f"N-MAE: {nmae}")
+    print(f"no redistribuion dense N-MAE: {nmae}")
 
     mask = MultiMask(
         {"row_mask": [2, 2, 4, 1, 4, 1], "col_mask": [2, 2, 1, 4, 1, 4]}, device=device
     )
     layer.prune_mask = mask
+    
     layer.set_light_redist(True)
+    set_torch_deterministic(0)
     y3 = layer(x)
     nmae = torch.norm(y3 - y, p=1) / torch.norm(y, p=1)
-    print(f"N-MAE: {nmae}")
+    print(f"with redistribuion dense N-MAE: {nmae}")
+
+    mask["col_mask"].bernoulli_(0.5)
+    mask["row_mask"].bernoulli_(0.5)
+    layer.weight.data *= mask.data
+
+    layer.set_noise_flag(False)
+    y = layer(x)
+    layer.set_noise_flag(True)
+
+    layer.set_light_redist(False)
+    set_torch_deterministic(0)
+    y4 = layer(x)
+    nmae = torch.norm(y4 - y, p=1) / torch.norm(y, p=1)
+    print(f"no redistribuion sparse N-MAE: {nmae}")
+
+    layer.set_light_redist(True)
+    set_torch_deterministic(0)
+    y5 = layer(x)
+    nmae = torch.norm(y5 - y, p=1) / torch.norm(y, p=1)
+    print(f"with redistribuion sparse N-MAE: {nmae}")
 
 
 def test_layer_power_calculator():
@@ -155,7 +179,7 @@ def test_DST_scheduler():
 
 
 # test_mode_switch()
-# test_output_noise()
-test_crosstalk()
+test_output_noise()
+# test_crosstalk()
 # test_layer_power_calculator()
 # test_DST_scheduler()
