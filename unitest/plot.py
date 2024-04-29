@@ -348,7 +348,7 @@ def plot_spacing():
     fig.savefig(f"./figs/{name}.pdf")
     pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
 
-def plot_output_noise():
+def plot_light_redist():
     device = "cuda:0"
     sparsity_minmax = (0.1, 1) # density
     sparsity_range = np.arange(*sparsity_minmax, 0.1)
@@ -377,8 +377,8 @@ def plot_output_noise():
     )
     layer.crosstalk_scheduler = crosstalk_scheduler
     layer.set_crosstalk_noise(True)
+    layer.set_output_noise(0.01)
     layer.prune_mask = mask
-    layer.set_output_noise(0.001)
     nmae_nodist = []
     nmae_dist = []
     for sparsity in sparsity_range:
@@ -387,7 +387,7 @@ def plot_output_noise():
         for random_seed in range(10):
             set_torch_deterministic(random_seed)
             layer.reset_parameters()
-            x = torch.randn(1, 64, 32, 32, device=device)
+            x = torch.randn(1, 64, 32, 32, device=device)*10
 
             mask["col_mask"].bernoulli_(sparsity**0.5)
             mask["row_mask"].bernoulli_(sparsity**0.5)
@@ -490,4 +490,4 @@ if __name__ == "__main__":
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
     # plot_crosstalk()
     # plot_spacing()
-    plot_output_noise()
+    plot_light_redist()
