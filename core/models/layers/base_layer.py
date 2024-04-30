@@ -18,7 +18,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from pyutils.compute import add_gaussian_noise
+from pyutils.general import print_stat
+from pyutils.compute import gen_gaussian_noise, add_gaussian_noise
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import linear_sum_assignment
 from torch import Tensor, nn
@@ -329,14 +330,19 @@ class ONNBaseLayer(nn.Module):
                 #     noise = einsum(noise, factor, "b o q c, o q c -> b o")
                 # else:
                 #     raise NotImplementedError
+                # print_stat(x, message="x: ")
+                # print_stat(noise, message="noise: ")
                 x = x + noise
             else:
                 vector_len = np.prod(self.weight.shape[1::2])  # q*c*k2
-                x = add_gaussian_noise(
+                noise = gen_gaussian_noise(
                     x,
                     noise_mean=0,
                     noise_std=np.sqrt(vector_len) * self.output_noise_std,
                 )
+                # print_stat(x, message="x: ")
+                # print_stat(noise, message="noise: ")
+                x = x + noise
         return x
 
     def calc_weight_MZI_power(

@@ -2172,40 +2172,49 @@ class DSTScheduler2(nn.Module):
 
         # print(death)
         if death:
-            # Get full mask
-            full_mask = mask.data
-            # print(full_mask)
-
+            col_turn_off_elements = mask["row_mask"].sum([2, 4]).flatten() # [p*q]
+            col_turn_off_average = col_turn_off_elements.float().mean().item()
+            row_turn_off_average = mask["col_mask"].sum([3, 5]).float().mean().item()
         else:
-            full_mask = mask.data
-            full_mask = ~full_mask
+            col_turn_off_elements = (~mask["row_mask"]).sum([2, 4]).flatten() # [p*q]
+            col_turn_off_average = col_turn_off_elements.float().mean().item()
+            row_turn_off_average = (~mask["col_mask"]).sum([3, 5]).float().mean().item()
 
-        full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(
-            p * q, r * k1, c * k2
-        )
-        col_turn_off = torch.sum(
-            full_mask_reshape, dim=1
-        )  # Sum over k1, result is (depth, k2)
+        # if death:
+        #     # Get full mask
+        #     full_mask = mask.data
+        #     # print(full_mask)
 
-        row_turn_off = torch.sum(
-            full_mask_reshape, dim=2
-        )  # Sum over k2, result is (depth, k1)
+        # else:
+        #     full_mask = mask.data
+        #     full_mask = ~full_mask
 
-        # For each slides,
-        # Number of elements turned off by one column; [depth] shape
-        col_turn_off_elements = torch.max(col_turn_off, dim=1)[0]
+        # full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(
+        #     p * q, r * k1, c * k2
+        # )
+        # col_turn_off = torch.sum(
+        #     full_mask_reshape, dim=1
+        # )  # Sum over k1, result is (depth, k2)
 
-        # For each slides,
-        # Number of elements turned off by one row; [depth] shape
-        row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
+        # row_turn_off = torch.sum(
+        #     full_mask_reshape, dim=2
+        # )  # Sum over k2, result is (depth, k1)
 
-        col_turn_off_average = (
-            col_turn_off_elements.sum().divide(col_turn_off_elements.shape[0]).item()
-        )
+        # # For each slides,
+        # # Number of elements turned off by one column; [depth] shape
+        # col_turn_off_elements = torch.max(col_turn_off, dim=1)[0]
 
-        row_turn_off_average = (
-            row_turn_off_elements.sum().divide(row_turn_off_elements.shape[0]).item()
-        )
+        # # For each slides,
+        # # Number of elements turned off by one row; [depth] shape
+        # row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
+
+        # col_turn_off_average = (
+        #     col_turn_off_elements.sum().divide(col_turn_off_elements.shape[0]).item()
+        # )
+
+        # row_turn_off_average = (
+        #     row_turn_off_elements.sum().divide(row_turn_off_elements.shape[0]).item()
+        # )
 
         col_total_required_elements = (
             self.HDAC_power / (self.ADC_power + self.TIA_power + self.HDAC_power)
