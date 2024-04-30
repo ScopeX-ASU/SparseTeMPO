@@ -7,6 +7,7 @@ from matplotlib.ticker import NullFormatter
 from pyparsing import line
 from pyutils.config import configs
 from pyutils.general import ensure_dir
+from pyutils.torch_train import set_torch_deterministic
 from pyutils.plot import batch_plot, pdf_crop, set_axes_size_ratio, set_ms
 from sklearn.manifold import TSNE
 
@@ -347,10 +348,146 @@ def plot_spacing():
     fig.savefig(f"./figs/{name}.pdf")
     pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
 
+def plot_light_redist():
+    device = "cuda:0"
+    sparsity_minmax = (0.1, 1) # density
+    sparsity_range = np.arange(*sparsity_minmax, 0.1)
+    layer = TeMPOBlockConv2d(64, 64, 3, miniblock=[2, 2, 16, 16], device=device)
+    mask = MultiMask(
+            {"row_mask": [layer.weight.shape[0], layer.weight.shape[1], layer.weight.shape[2], 1, layer.weight.shape[4], 1], 
+            "col_mask": [layer.weight.shape[0], layer.weight.shape[1], 1, layer.weight.shape[3], 1, layer.weight.shape[5]]}, device=device
+        )
+    crosstalk_scheduler = CrosstalkScheduler(
+        crosstalk_coupling_factor=[
+            3.55117528e-07,
+            -1.55789201e-05,
+            -8.29631681e-06,
+            9.89616761e-03,
+            -1.76013871e-01,
+            1,
+        ],  # y=p1*x^5+p2*x^4+p3*x^3+p4*x^2+p5*x+p6
+        crosstalk_exp_coupling_factor=[
+            0.2167267,
+            -0.12747211,
+        ],  # a * exp(b*x)
+        interv_h=9+6+5,
+        interv_v=120,
+        interv_s=9,
+        device=device,
+    )
+    layer.crosstalk_scheduler = crosstalk_scheduler
+    layer.set_crosstalk_noise(True)
+    layer.set_output_noise(0.01)
+    layer.prune_mask = mask
+    nmae_nodist = []
+    nmae_dist = []
+    for sparsity in sparsity_range:
+        nmae_nodist_tmp = []
+        nmae_dist_tmp = []
+        for random_seed in range(10):
+            set_torch_deterministic(random_seed)
+            layer.reset_parameters()
+            x = torch.randn(1, 64, 32, 32, device=device)*10
+
+            mask["col_mask"].bernoulli_(sparsity**0.5)
+            mask["row_mask"].bernoulli_(sparsity**0.5)
+            layer.weight.data *= mask.data
+
+            layer.set_noise_flag(False)
+            y = layer(x)
+
+            layer.set_noise_flag(True)
+            layer.set_light_redist(False)
+            set_torch_deterministic(0)
+            y1 = layer(x)
+            nmae = torch.norm(y1 - y, p=1) / torch.norm(y, p=1)
+            nmae_nodist_tmp.append(nmae.item())
+            print(f"no redistribuion sparsity {sparsity:.3f} N-MAE: {nmae}")
+
+            layer.set_light_redist(True)
+            set_torch_deterministic(0)
+            y2 = layer(x)
+            nmae = torch.norm(y2 - y, p=1) / torch.norm(y, p=1)
+            nmae_dist_tmp.append(nmae.item())
+            print(f"with redistribuion sparsity {sparsity:.3f} N-MAE: {nmae}")
+        nmae_nodist.append((np.mean(nmae_nodist_tmp), np.std(nmae_nodist_tmp)))
+        nmae_dist.append((np.mean(nmae_dist_tmp), np.std(nmae_dist_tmp)))
+    nmae_nodist = np.array(nmae_nodist)
+    nmae_dist = np.array(nmae_dist)
+    print(nmae_nodist)
+    print(nmae_dist)
+
+
+    fig, ax = None, None
+    name = "LightRefocusingNoise"
+
+    fig, ax, _ = batch_plot(
+        "errorbar",
+        raw_data={
+            "x": sparsity_range,
+            "y": nmae_nodist[:, 0],
+            "yerror": nmae_nodist[:, 1],
+        },
+        name=name,
+        xlabel="Sparsity",
+        ylabel="N-MAE",
+        fig=fig,
+        ax=ax,
+        xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
+        xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
+        yrange=[0.05, 0.151, 0.05],
+        ylimit=[0.05, 0.16],
+        xformat="%.1f",
+        yformat="%.2f",
+        figscale=[0.65, 0.45 * 9.1 / 8],
+        fontsize=10,
+        linewidth=1,
+        gridwidth=0.5,
+        ieee=True,
+        trace_label="Prune",
+        trace_color=color_dict["mitred"],
+        # legend=True,
+        # legend_loc="upper right",
+    )
+
+    fig, ax, _ = batch_plot(
+        "errorbar",
+        raw_data={
+            "x": sparsity_range,
+            "y": nmae_dist[:, 0],
+            "yerror": nmae_dist[:, 1],
+        },
+        name=name,
+        xlabel="Sparsity",
+        ylabel="N-MAE",
+        fig=fig,
+        ax=ax,
+        xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
+        xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
+        yrange=[0.05, 0.151, 0.05],
+        ylimit=[0.05, 0.16],
+        xformat="%.1f",
+        yformat="%.2f",
+        figscale=[0.65, 0.45 * 9.1 / 8],
+        fontsize=10,
+        linewidth=1,
+        gridwidth=0.5,
+        ieee=True,
+        trace_label="Prune+Refocusing",
+        trace_color=color_dict["blue"],
+        # legend=True,
+        # legend_loc="upper right",
+    )
+    set_ms()
+    ensure_dir(f"./figs")
+    fig.savefig(f"./figs/{name}.png")
+    fig.savefig(f"./figs/{name}.pdf")
+    pdf_crop(f"./figs/{name}.pdf", f"./figs/{name}.pdf")
 
 if __name__ == "__main__":
     # for sp_mode in ["uniform", "topk", "IS"]:
     #     for sa_mode in ["first_grad", "second_grad"]:
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
     # plot_crosstalk()
-    plot_spacing()
+    # plot_spacing()
+    plot_light_redist()

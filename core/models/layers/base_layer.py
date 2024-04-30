@@ -24,7 +24,7 @@ from scipy.optimize import linear_sum_assignment
 from torch import Tensor, nn
 from torch.nn import Parameter, init
 from torch.types import Device
-
+from einops import einsum
 from .utils import STE, mzi_out_diff_to_phase, mzi_phase_to_out_diff, partition_chunks
 
 __all__ = ["ONNBaseLayer"]
@@ -299,25 +299,36 @@ class ONNBaseLayer(nn.Module):
                 q, c = self.weight.shape[1], self.weight.shape[3]  # q*c
                 col_mask = self.prune_mask["col_mask"]  # [p,q,1,c,1,k2]
                 col_nonzeros = col_mask.sum(-1).squeeze(-1)  # [p,q,1,c]
-                factor = (
-                    col_nonzeros.pow(1.5)
-                    .div(k2 / self.output_noise_std)
-                    .expand(-1, -1, r * k1, -1)
-                )  # [p,q,1,c] -> [p,q,r*k1,c]
+                factor = col_nonzeros / k2  # [p,q,1,c]
+                row_mask = self.prune_mask["row_mask"]  # [p,q,r,1,k1,1]
+                row_mask = row_mask[..., 0, :, :].flatten(2, 3)  # [p,q,r*k1, 1]
+                factor = factor * row_mask  # [p,q,r*k1, c]
+
                 factor = factor.permute(0, 2, 1, 3).flatten(0, 1)[
                     : x.shape[1]
                 ]  # [p*r*k1, q, c] -> [out_c, q, c]
-                noise = torch.randn(
-                    size=list(x.shape) + [q, c], device=x.device
-                )  # [bs, out_c, h, w, q, c] or [bs, out_c, q, c]
-                if noise.dim() == 6:
-                    noise = torch.einsum(
-                        "bohwqc,oqc -> bohw", noise, factor
-                    )  # [bs, out_c, h, w]
-                elif noise.dim() == 4:
-                    noise = torch.einsum("boqc,oqc -> bo", noise, factor)  # [bs, out_c]
+
+                std = factor.mul(k2**0.5).square().sum([-2, -1]).sqrt()
+
+                std *= self.output_noise_std  # [out_c]
+
+                noise = torch.randn_like(x)  # [bs, out_c, h, w] or [bs, out_c, q, c]
+
+                if noise.dim() == 4:
+                    noise = noise * std[..., None, None]
+                elif noise.dim() == 2:
+                    noise = noise * std
                 else:
                     raise NotImplementedError
+                # if noise.dim() == 6:
+                #     noise = torch.einsum(
+                #         "bohwqc,oqc -> bohw", noise, factor
+                #     )  # [bs, out_c, h, w]
+                # elif noise.dim() == 4:
+                #     # noise = torch.einsum("boqc,oqc -> bo", noise, factor)  # [bs, out_c]
+                #     noise = einsum(noise, factor, "b o q c, o q c -> b o")
+                # else:
+                #     raise NotImplementedError
                 x = x + noise
             else:
                 vector_len = np.prod(self.weight.shape[1::2])  # q*c*k2
@@ -733,7 +744,7 @@ class ONNBaseLayer(nn.Module):
             * epsilon_matrix.shape[1]
         )  # Rk + R^3
         return self.row_ind, self.col_ind, cycles
-
+        
     def forward(self, x):
         raise NotImplementedError
 

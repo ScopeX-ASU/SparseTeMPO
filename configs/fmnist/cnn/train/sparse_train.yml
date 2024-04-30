@@ -39,6 +39,7 @@ noise:
   phase_noise_std: 0
   gamma_noise_std: 0
   crosstalk_factor: 0.05
+  output_noise_std: 0
   random_state: 42
   weight_noise_std: 0.0
   crosstalk_flag: 0
