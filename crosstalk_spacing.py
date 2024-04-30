@@ -404,10 +404,10 @@ def main() -> None:
         model.set_crosstalk_noise(True)
         model.set_output_noise(configs.noise.output_noise_std)
 
-        interv_s_minax = [7, 25]
+        interv_s_minax = [7, 16]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-        interv_h_s_minax = [1, 25]
+        interv_h_s_minax = [1, 8]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
         acc_list = []
@@ -441,14 +441,15 @@ def main() -> None:
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
             next(iter(test_loader))[0].shape
             avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=8, C=8, freq=1)[-2])
+            
         acc_list = np.array(acc_list)
         avg_power_list = np.array(avg_power_list)
         print(acc_list.tolist())
         print(avg_power_list.tolist())
 
-        np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")

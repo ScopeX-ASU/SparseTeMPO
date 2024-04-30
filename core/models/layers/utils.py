@@ -31,6 +31,8 @@ from scipy.interpolate import LinearNDInterpolator
 from torch import Tensor, nn
 from torch.nn import Parameter
 from torch.types import Device, _size
+import numpy as np
+import math
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../.."))
 
@@ -96,6 +98,7 @@ def polynomial2(
         )
     else:
         raise NotImplementedError
+
 
 
 class STE(torch.autograd.Function):
@@ -555,7 +558,7 @@ class GlobalTemperatureScheduler(object):
         )
 
         return delta_Phi  # [P, Q, 1, k]
-
+    
 
 class MZIPowerEvaluator(object):
     def __init__(
@@ -902,8 +905,8 @@ class CrosstalkScheduler(object):
         ]
         return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
-    def calc_MZI_power(self, delta_phi: Tensor, reduction: str = "sum") -> Tensor:
-        power = self.mzi_power_evaluator.calc_MZI_power(delta_phi, reduction)
+    def calc_MZI_power(self, delta_phi: Tensor, interv_s: float=None, reduction: str = "sum") -> Tensor:
+        power = self.mzi_power_evaluator.calc_MZI_power(delta_phi, interv_s, reduction)
         return power
 
 

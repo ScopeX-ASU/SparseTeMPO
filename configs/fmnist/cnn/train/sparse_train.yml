@@ -10,6 +10,7 @@ optimizer:
   name: adam
   lr: 0.002
   weight_decay: 0.0001
+  grad_clip_value: 1
 
 scheduler:
   name: cosine
@@ -34,16 +35,19 @@ quantize:
   input_bit: 8
 
 noise:
+  phase_bias: 0
   phase_noise_std: 0
+  gamma_noise_std: 0
   crosstalk_factor: 0.05
   output_noise_std: 0
   random_state: 42
+  weight_noise_std: 0.0
+  crosstalk_flag: 0
+  noise_flag: 0
   crosstalk_scheduler:
     interv_h: 20
     interv_v: 120
     interv_s: 10
-  crosstalk_flag: False
-  noise_flag: False
 
 checkpoint:
   save_best_model_k: 3
@@ -54,6 +58,34 @@ checkpoint:
 
 model:
   name: "TeMPO_CNN"
+  conv_cfg:
+    type: TeMPOBlockConv2d
+    mode: "weight"
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  # conv_cfg:
+  #   type: Conv2d
+  linear_cfg:
+    type: TeMPOBlockLinear
+    mode: "weight"
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  # linear_cfg:
+  #   type: Linear
+  norm_cfg:
+    type: BN2d
+    affine: True
+  act_cfg:
+    type: ReLU
+    inplace: True
+  kernel_list: [64, 64, 64]
+  kernel_size_list: [3, 3, 3]
+  hidden_list: []
+  stride_list: [1, 2, 1]
+  padding_list: [1, 1, 1]
+  pool_out_size: 5
 
 debug:
   verboise: 1
@@ -62,16 +94,16 @@ dst_scheduler:
   death_rate: 0.5
   growth_death_ratio: 1.0
   death_rate_decay: cosine
-  death_mode: magnitude_power_crosstalk
-  growth_mode: gradient_power_crosstalk
+  death_mode: magnitude
+  growth_mode: gradient
   redistribution_mode: null
   spe_initial: null
   pruning_type: structure_col
   update_frequency: 1400
   T_max: 0.8
-  density: 0.5
+  density: 0.6
   max_combinations: 100
-  init_mode: uniform_power_crosstalk
+  init_mode: uniform
   power_choice_margin: 2
   splitter_biases: 90
   node_spacing: [20, 100] # um, row, col spacing in weight matrix

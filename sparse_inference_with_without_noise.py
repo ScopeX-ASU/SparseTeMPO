@@ -108,7 +108,7 @@ def train(
         step += 1
 
         if dst_scheduler is not None:
-            dst_scheduler.step() # apply pruning mask and update rate
+            dst_scheduler.step()  # apply pruning mask and update rate
 
         if batch_idx % int(configs.run.log_interval) == 0:
             log = "Train Epoch: {} [{:7d}/{:7d} ({:3.0f}%)] Loss: {:.4e} class Loss: {:.4e}".format(
@@ -140,12 +140,9 @@ def train(
         step=epoch,
     )
     if dst_scheduler is not None:
-        lg.info(
-            f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}"
-        )
-        lg.info(
-            f"Power:{dst_scheduler.get_total_power()}"
-        )
+        lg.info(f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}")
+        lg.info(f"Power:{dst_scheduler.get_total_power()}")
+
 
 def validate(
     model: nn.Module,
@@ -183,9 +180,7 @@ def validate(
     lg.info(
         f"\nValidation set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(validation_loader.dataset)} ({accuracy:.2f}%)\n"
     )
-    mlflow.log_metrics(
-        {"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch)
 
 
 def test(
@@ -224,13 +219,14 @@ def test(
     accuracy = 100.0 * correct / len(test_loader.dataset)
     accuracy_vector.append(accuracy)
 
-    lg.info(
-        f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
-    )
+    # lg.info(
+    #     f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
+    # )
 
-    mlflow.log_metrics(
-        {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
-    )
+    # mlflow.log_metrics(
+    #     {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
+    # )
+    return accuracy
 
 
 def main() -> None:
@@ -278,6 +274,8 @@ def main() -> None:
             int(configs.run.random_state) if int(configs.run.deterministic) else None
         ),
     )
+    ## dummy forward to initialize quantizer
+    model(next(iter(test_loader))[0].to(device))
     lg.info(model)
 
     optimizer = builder.make_optimizer(
@@ -289,7 +287,7 @@ def main() -> None:
     criterion = builder.make_criterion(configs.criterion.name, configs.criterion).to(
         device
     )
-    
+
     aux_criterions = dict()
     if configs.aux_criterion is not None:
         for name, config in configs.aux_criterion.items():
@@ -309,7 +307,9 @@ def main() -> None:
         print(f"Register hidden state hooks for teacher and students")
 
     if configs.dst_scheduler is not None:
-        dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
+        dst_scheduler = builder.make_dst_scheduler(
+            optimizer, model, train_loader, configs
+        )
     else:
         dst_scheduler = None
     mixup_config = configs.dataset.augment
@@ -351,7 +351,7 @@ def main() -> None:
 
     lossv, accv = [0], [0]
     epoch = 0
-    
+
     try:
         lg.info(
             f"Experiment {configs.run.experiment} ({experiment.experiment_id}) starts. Run ID: ({mlflow.active_run().info.run_id}). PID: ({os.getpid()}). PPID: ({os.getppid()}). Host: ({os.uname()[1]})"
@@ -367,7 +367,7 @@ def main() -> None:
             )
 
             lg.info("Validate resumed model...")
-            test(
+            acc = test(
                 model,
                 validation_loader,
                 0,
@@ -377,6 +377,7 @@ def main() -> None:
                 device,
                 fp16=grad_scaler._enabled,
             )
+            print(f"Validate loaded checkpoint validation acc: {acc}")
         if teacher is not None:
             test(
                 teacher,
@@ -398,73 +399,50 @@ def main() -> None:
             model = torch.compile(model)
             if teacher is not None:
                 teacher = torch.compile(teacher)
+        
+        model.set_noise_flag(True)
+        model.set_crosstalk_noise(True)
 
-        for epoch in range(1, int(configs.run.n_epochs) + 1):
-            train(
-                model,
-                train_loader,
-                optimizer,
-                scheduler,
-                epoch,
-                criterion,
-                aux_criterions,
-                mixup_fn,
-                device,
-                grad_scaler=grad_scaler,
-                teacher=teacher,
-                dst_scheduler=dst_scheduler,
-            )
+        # interv_s_minax = [7, 25]
+        # interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-            if validation_loader is not None:
-                validate(
-                    model,
-                    validation_loader,
-                    epoch,
-                    criterion,
-                    lossv,
-                    accv,
-                    device,
-                    mixup_fn=test_mixup_fn,
-                    fp16=grad_scaler._enabled,
-                )
-            test(
-                model,
-                test_loader,
-                epoch,
-                criterion,
-                lossv if validation_loader is None else [],
-                accv if validation_loader is None else [],
-                device,
-                mixup_fn=test_mixup_fn,
-                fp16=grad_scaler._enabled,
-            )
-            saver.save_model(
-                getattr(model, "_orig_mod", model), # remove compiled wrapper
-                accv[-1],
-                epoch=epoch,
-                path=checkpoint,
-                save_model=False,
-                print_msg=True,
-            )
+        # interv_h_s_minax = [1, 25]
+        # interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
+        # acc_list = []
+        # avg_power_list = []
+        # for interv_s in interv_s_range:
+        #     for interv_h_s in interv_h_s_range:
+        #         interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
+        interv_s = configs.noise.crosstalk_scheduler.interv_s
+        interv_h = configs.noise.crosstalk_scheduler.interv_h
+        interv_v = configs.noise.crosstalk_scheduler.interv_v
+        model.crosstalk_scheduler.set_spacing(
+            interv_s=interv_s, interv_h=interv_h, interv_v=interv_v,
+        )
+        acc = test(
+            model,
+            test_loader,
+            0,
+            criterion,
+            [],
+            [],
+            device,
+            mixup_fn=None,
+            fp16=False,
+        )
+        #         acc_list.append((interv_s, interv_h_s, acc))
+        #         print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
+        #     next(iter(test_loader))[0].shape
+        #     avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=8, C=8, freq=1)[-2])
+        # acc_list = np.array(acc_list)
+        # avg_power_list = np.array(avg_power_list)
+        # print(acc_list.tolist())
+        # print(avg_power_list.tolist())
 
-            # model.set_noise_flag(True)
-            # model.set_crosstalk_noise(True)
-            
-            # test(
-            #     model,
-            #     test_loader,
-            #     epoch,
-            #     criterion,
-            #     [],
-            #     [],
-            #     device,
-            #     mixup_fn=test_mixup_fn,
-            #     fp16=grad_scaler._enabled,
-            # )
-
-            # model.set_noise_flag(False)
-            # model.set_crosstalk_noise(False)
+        # np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
+        # np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")
+        # np.savetxt(f"./log/fmnist/cnn/crosstalk_spacing/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")

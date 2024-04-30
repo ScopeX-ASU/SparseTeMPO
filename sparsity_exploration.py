@@ -10,9 +10,10 @@ import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
-from pyutils.config import configs
+from pyutils.config import configs, Config
 from pyutils.general import AverageMeter
 from pyutils.general import logger as lg
+from core.models.dst2 import MultiMask
 from pyutils.torch_train import (
     BestKModelSaver,
     count_parameters,
@@ -21,7 +22,7 @@ from pyutils.torch_train import (
     set_torch_deterministic,
 )
 from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
-
+from hardware.photonic_crossbar import PhotonicCrossbar
 from core import builder
 from core.datasets.mixup import Mixup, MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
@@ -108,7 +109,7 @@ def train(
         step += 1
 
         if dst_scheduler is not None:
-            dst_scheduler.step() # apply pruning mask and update rate
+            dst_scheduler.step()  # apply pruning mask and update rate
 
         if batch_idx % int(configs.run.log_interval) == 0:
             log = "Train Epoch: {} [{:7d}/{:7d} ({:3.0f}%)] Loss: {:.4e} class Loss: {:.4e}".format(
@@ -140,12 +141,9 @@ def train(
         step=epoch,
     )
     if dst_scheduler is not None:
-        lg.info(
-            f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}"
-        )
-        lg.info(
-            f"Power:{dst_scheduler.get_total_power()}"
-        )
+        lg.info(f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}")
+        lg.info(f"Power:{dst_scheduler.get_total_power()}")
+
 
 def validate(
     model: nn.Module,
@@ -183,9 +181,7 @@ def validate(
     lg.info(
         f"\nValidation set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(validation_loader.dataset)} ({accuracy:.2f}%)\n"
     )
-    mlflow.log_metrics(
-        {"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch)
 
 
 def test(
@@ -224,13 +220,14 @@ def test(
     accuracy = 100.0 * correct / len(test_loader.dataset)
     accuracy_vector.append(accuracy)
 
-    lg.info(
-        f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
-    )
+    # lg.info(
+    #     f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
+    # )
 
-    mlflow.log_metrics(
-        {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
-    )
+    # mlflow.log_metrics(
+    #     {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
+    # )
+    return accuracy
 
 
 def main() -> None:
@@ -239,9 +236,12 @@ def main() -> None:
     # parser.add_argument('--run-dir', metavar='DIR', help='run directory')
     # parser.add_argument('--pdb', action='store_true', help='pdb')
     args, opts = parser.parse_known_args()
-
+    arch_config = Config()
+    arch_config.load("./configs/hardware/arch_config.yaml")
     configs.load(args.config, recursive=True)
     configs.update(opts)
+    configs.update({"arch": arch_config.dict()})
+
     lg.info(configs)
 
     if torch.cuda.is_available() and int(configs.run.use_cuda):
@@ -278,6 +278,8 @@ def main() -> None:
             int(configs.run.random_state) if int(configs.run.deterministic) else None
         ),
     )
+    ## dummy forward to initialize quantizer
+    model(next(iter(test_loader))[0].to(device))
     lg.info(model)
 
     optimizer = builder.make_optimizer(
@@ -289,7 +291,7 @@ def main() -> None:
     criterion = builder.make_criterion(configs.criterion.name, configs.criterion).to(
         device
     )
-    
+
     aux_criterions = dict()
     if configs.aux_criterion is not None:
         for name, config in configs.aux_criterion.items():
@@ -309,7 +311,9 @@ def main() -> None:
         print(f"Register hidden state hooks for teacher and students")
 
     if configs.dst_scheduler is not None:
-        dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
+        dst_scheduler = builder.make_dst_scheduler(
+            optimizer, model, train_loader, configs
+        )
     else:
         dst_scheduler = None
     mixup_config = configs.dataset.augment
@@ -329,6 +333,16 @@ def main() -> None:
 
     model_name = f"{configs.model.name}"
     checkpoint = f"./checkpoint/{configs.checkpoint.checkpoint_dir}/{model_name}_{configs.checkpoint.model_comment}.pt"
+
+    hw = PhotonicCrossbar(
+                core_width=configs.core.width,
+                core_height=configs.core.height,
+                num_wavelength=configs.core.num_wavelength,
+                in_bit=configs.quantize.in_bit,
+                w_bit=configs.quantize.w_bit,
+                act_bit=configs.quantize.act_bit,
+                config=configs
+            )
 
     lg.info(f"Current checkpoint: {checkpoint}")
 
@@ -351,7 +365,7 @@ def main() -> None:
 
     lossv, accv = [0], [0]
     epoch = 0
-    
+
     try:
         lg.info(
             f"Experiment {configs.run.experiment} ({experiment.experiment_id}) starts. Run ID: ({mlflow.active_run().info.run_id}). PID: ({os.getpid()}). PPID: ({os.getppid()}). Host: ({os.uname()[1]})"
@@ -367,7 +381,7 @@ def main() -> None:
             )
 
             lg.info("Validate resumed model...")
-            test(
+            acc = test(
                 model,
                 validation_loader,
                 0,
@@ -377,6 +391,12 @@ def main() -> None:
                 device,
                 fp16=grad_scaler._enabled,
             )
+            print(f"Validate loaded checkpoint validation acc: {acc}")
+
+            for name, m in model.named_modules():
+                if isinstance(m, model._conv):  # no last fc layer
+                    m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+
         if teacher is not None:
             test(
                 teacher,
@@ -398,73 +418,64 @@ def main() -> None:
             model = torch.compile(model)
             if teacher is not None:
                 teacher = torch.compile(teacher)
+        
+        model.set_noise_flag(True)
+        model.set_crosstalk_noise(True)
 
-        for epoch in range(1, int(configs.run.n_epochs) + 1):
-            train(
-                model,
-                train_loader,
-                optimizer,
-                scheduler,
-                epoch,
-                criterion,
-                aux_criterions,
-                mixup_fn,
-                device,
-                grad_scaler=grad_scaler,
-                teacher=teacher,
-                dst_scheduler=dst_scheduler,
-            )
+        interv_s_minax = [7, 16]
+        interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-            if validation_loader is not None:
-                validate(
-                    model,
-                    validation_loader,
-                    epoch,
-                    criterion,
-                    lossv,
-                    accv,
-                    device,
-                    mixup_fn=test_mixup_fn,
-                    fp16=grad_scaler._enabled,
+        interv_h_s_minax = [1, 8]
+        interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
+
+        cycle_dict = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=configs.arch.work_freq)[3]
+
+            # Then get rest architecture energy
+        layer_energy, layer_energy_breakdown = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
+
+        acc_list = []
+        avg_power_list = []
+        total_energy = []
+        for interv_s in interv_s_range:
+            for interv_h_s in interv_h_s_range:
+                interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
+                model.crosstalk_scheduler.set_spacing(
+                    interv_s=interv_s, interv_h=interv_h
                 )
-            test(
-                model,
-                test_loader,
-                epoch,
-                criterion,
-                lossv if validation_loader is None else [],
-                accv if validation_loader is None else [],
-                device,
-                mixup_fn=test_mixup_fn,
-                fp16=grad_scaler._enabled,
-            )
-            saver.save_model(
-                getattr(model, "_orig_mod", model), # remove compiled wrapper
-                accv[-1],
-                epoch=epoch,
-                path=checkpoint,
-                save_model=False,
-                print_msg=True,
-            )
+                acc = test(
+                    model,
+                    test_loader,
+                    0,
+                    criterion,
+                    [],
+                    [],
+                    device,
+                    mixup_fn=None,
+                    fp16=False,
+                )
+                acc_list.append((interv_s, interv_h_s, acc))
+                print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
+            next(iter(test_loader))[0].shape
+            mzi_energy = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=configs.arch.tiles, C=configs.arch.cores_per_tile, freq=configs.arch.work_freq)[1]
+            # for name, m in model.named_modules():
+            #     layer_energy[name] += mzi_energy[name] 
+            #     layer_energy_breakdown[name]["weight_mzi"] = mzi_energy[name]
+            # total_energy.append(mzi_energy)
+            avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=configs.arch.tiles, C=configs.arch.cores_per_tile, freq=configs.arch.work_freq)[-2])
 
 
-            # model.set_noise_flag(True)
-            # model.set_crosstalk_noise(True)
-            
-            # test(
-            #     model,
-            #     test_loader,
-            #     epoch,
-            #     criterion,
-            #     [],
-            #     [],
-            #     device,
-            #     mixup_fn=test_mixup_fn,
-            #     fp16=grad_scaler._enabled,
-            # )
 
-            # model.set_noise_flag(False)
-            # model.set_crosstalk_noise(False)
+        acc_list = np.array(acc_list)
+        avg_power_list = np.array(avg_power_list)
+        print(acc_list.tolist())
+        print(avg_power_list.tolist())
+        print(layer_energy)
+        print(layer_energy_breakdown)
+
+
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")
