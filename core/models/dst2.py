@@ -1579,7 +1579,7 @@ class DSTScheduler2(nn.Module):
         p, q, r, c, k1, k2 = weight.shape
         # num of rows to prune out of total p*q*r*k1 rows
         if row_col:
-            num_row_select = int(round(num_select / row_elements_average))
+            num_row_select = int(round(num_select / row_elements_average)) if row_elements_average > 0 else 0
         else:
             num_row_select = int(round(num_select / (c * k2)))
 
@@ -1814,7 +1814,7 @@ class DSTScheduler2(nn.Module):
         if row_col:
             num_col_select = int(
                 round(num_select / col_elements_average)
-            )  # num of col p*q*c*k2
+            )  if col_elements_average > 0 else 0 # num of col p*q*c*k2
         else:
             num_col_select = int(round(num_select / (r * k1)))  # num of col p*q*c*k2
 
