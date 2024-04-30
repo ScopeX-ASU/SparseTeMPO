@@ -571,6 +571,7 @@ class MZIPowerEvaluator(object):
         self.ps_width = ps_width
         self.device = device
         self.set_spacing(interv_s)
+        assert os.path.exists(csv_file), f"{csv_file} does not exist"
         self._fit_MZI_power_interp(csv_file)
 
     def set_spacing(self, interv_s: int):
@@ -620,10 +621,20 @@ class MZIPowerEvaluator(object):
         self._MZI_power_interp = LinearNDInterpolator(X_data, Y_data)
         return self._MZI_power_interp
 
-    def calc_MZI_power(self, delta_phi: Tensor, interv_s: float=None, reduction: str = "sum") -> Tensor:
+    def calc_MZI_power(
+        self,
+        delta_phi: Tensor | float,
+        interv_s: float | None = None,
+        reduction: str = "sum",
+    ) -> Tensor:
         ## delta_phi: phase difference of an MZI, input must be -pi/2 to pi/2
-        interv_s = interv_s if interv_s is not None else self.interv_s
-        interv_s = max(self.ps_width + 1, min(self.interv_s, 25))
+        interv_s = interv_s or self.interv_s
+        if not torch.is_tensor(delta_phi):
+            is_tensor = False
+            delta_phi = torch.tensor(delta_phi, device=self.device)
+        else:
+            is_tensor = True
+        interv_s = max(self.ps_width + 1, min(interv_s, 25))
         if self._MZI_power_interp is None:
             self._fit_MZI_power_interp()
         delta_phi_shape = delta_phi.shape
@@ -635,13 +646,10 @@ class MZIPowerEvaluator(object):
             .cpu()
             .numpy()
         )
-        # print(X_data.shape)
-        # exit(0)
-        # print(X_data)
-        power = torch.from_numpy(
-            self._MZI_power_interp(X_data).reshape(delta_phi_shape)
-        ).to(
-            self.device
+        power = (
+            torch.from_numpy(self._MZI_power_interp(X_data).reshape(delta_phi_shape))
+            .float()
+            .to(self.device)
         )  # [p,q,r,c,k1,k2]
         # print(power)
         # exit(0)
@@ -651,11 +659,12 @@ class MZIPowerEvaluator(object):
         #     self.power_coefficients,
         # ).relu() # nonnegative power
         if reduction == "sum":
-            return power.mean()
-        elif reduction == "none":
-            return power
-        else:
-            raise NotImplementedError
+            power = power.sum()
+        elif reduction == "mean":
+            power = power.mean()
+        if not is_tensor:
+            power = power.item()
+        return power
 
 
 class CrosstalkScheduler(object):
