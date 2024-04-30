@@ -83,7 +83,7 @@ class MultiMask(object):
     ) -> None:
         self.mask_cfg = mask_cfg
         self._masks = {
-            name: torch.ones(shape, device=device, dtype=torch.bool)
+            name: torch.ones(shape, device=device, dtype=torch.bool) if not torch.is_tensor(shape) else shape
             for name, shape in mask_cfg.items()
         }
 

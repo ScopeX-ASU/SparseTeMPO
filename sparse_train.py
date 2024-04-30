@@ -446,6 +446,26 @@ def main() -> None:
                 save_model=False,
                 print_msg=True,
             )
+
+
+            # model.set_noise_flag(True)
+            # model.set_crosstalk_noise(True)
+            
+            # test(
+            #     model,
+            #     test_loader,
+            #     epoch,
+            #     criterion,
+            #     [],
+            #     [],
+            #     device,
+            #     mixup_fn=test_mixup_fn,
+            #     fp16=grad_scaler._enabled,
+            # )
+
+            # model.set_noise_flag(False)
+            # model.set_crosstalk_noise(False)
+
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")
 

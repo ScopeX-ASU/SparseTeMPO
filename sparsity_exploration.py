@@ -10,9 +10,10 @@ import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
-from pyutils.config import configs
+from pyutils.config import configs, Config
 from pyutils.general import AverageMeter
 from pyutils.general import logger as lg
+from core.models.dst2 import MultiMask
 from pyutils.torch_train import (
     BestKModelSaver,
     count_parameters,
@@ -21,7 +22,7 @@ from pyutils.torch_train import (
     set_torch_deterministic,
 )
 from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
-
+from hardware.photonic_crossbar import PhotonicCrossbar
 from core import builder
 from core.datasets.mixup import Mixup, MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
@@ -235,9 +236,12 @@ def main() -> None:
     # parser.add_argument('--run-dir', metavar='DIR', help='run directory')
     # parser.add_argument('--pdb', action='store_true', help='pdb')
     args, opts = parser.parse_known_args()
-
+    arch_config = Config()
+    arch_config.load("./configs/hardware/arch_config.yaml")
     configs.load(args.config, recursive=True)
     configs.update(opts)
+    configs.update({"arch": arch_config.dict()})
+
     lg.info(configs)
 
     if torch.cuda.is_available() and int(configs.run.use_cuda):
@@ -330,6 +334,16 @@ def main() -> None:
     model_name = f"{configs.model.name}"
     checkpoint = f"./checkpoint/{configs.checkpoint.checkpoint_dir}/{model_name}_{configs.checkpoint.model_comment}.pt"
 
+    hw = PhotonicCrossbar(
+                core_width=configs.core.width,
+                core_height=configs.core.height,
+                num_wavelength=configs.core.num_wavelength,
+                in_bit=configs.quantize.in_bit,
+                w_bit=configs.quantize.w_bit,
+                act_bit=configs.quantize.act_bit,
+                config=configs
+            )
+
     lg.info(f"Current checkpoint: {checkpoint}")
 
     mlflow.set_experiment(configs.run.experiment)
@@ -378,6 +392,11 @@ def main() -> None:
                 fp16=grad_scaler._enabled,
             )
             print(f"Validate loaded checkpoint validation acc: {acc}")
+
+            for name, m in model.named_modules():
+                if isinstance(m, model._conv):  # no last fc layer
+                    m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+
         if teacher is not None:
             test(
                 teacher,
@@ -409,8 +428,14 @@ def main() -> None:
         interv_h_s_minax = [1, 8]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
+        cycle_dict = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=configs.arch.work_freq)[3]
+
+            # Then get rest architecture energy
+        layer_energy, layer_energy_breakdown = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
+
         acc_list = []
         avg_power_list = []
+        total_energy = []
         for interv_s in interv_s_range:
             for interv_h_s in interv_h_s_range:
                 interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
@@ -431,12 +456,22 @@ def main() -> None:
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
             next(iter(test_loader))[0].shape
-            avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=8, C=8, freq=1)[-2])
-            
+            mzi_energy = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=configs.arch.tiles, C=configs.arch.cores_per_tile, freq=configs.arch.work_freq)[1]
+            # for name, m in model.named_modules():
+            #     layer_energy[name] += mzi_energy[name] 
+            #     layer_energy_breakdown[name]["weight_mzi"] = mzi_energy[name]
+            # total_energy.append(mzi_energy)
+            avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=configs.arch.tiles, C=configs.arch.cores_per_tile, freq=configs.arch.work_freq)[-2])
+
+
+
         acc_list = np.array(acc_list)
         avg_power_list = np.array(avg_power_list)
         print(acc_list.tolist())
         print(avg_power_list.tolist())
+        print(layer_energy)
+        print(layer_energy_breakdown)
+
 
         np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
         np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")

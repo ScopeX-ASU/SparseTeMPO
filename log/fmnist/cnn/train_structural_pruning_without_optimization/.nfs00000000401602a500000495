@@ -1,0 +1,192 @@
+[33;21m2024-04-28 18:17:11,297 - butterfly_op.py[line:23] - WARNING: Import universal_cuda fail[0m
+[33;21m2024-04-28 18:17:11,298 - butterfly_op.py[line:27] - WARNING: Import hadamard_cuda fail[0m
+[33;21m2024-04-28 18:17:11,301 - matrix_parametrization.py[line:23] - WARNING: Cannot import matrix_parametrization_cuda. Decomposers can only work on CPU mode[0m
+[38;21m2024-04-28 18:17:11,369 - sparse_train.py[line:245] - INFO: dataset:
+  name: fmnist
+  root: /home/dataset/fashion-mnist
+  train_valid_split_ratio: [0.9, 0.1]
+  train_valid_split_seed: 1
+  resize_mode: bicubic
+  center_crop: 28
+  n_test_samples: None
+  n_valid_samples: None
+  num_workers: 2
+  img_height: 28
+  img_width: 28
+  in_channels: 1
+  num_classes: 10
+  transform: augmented
+  shuffle: 1
+  augment: None
+criterion:
+  name: ce
+aux_criterion: None
+optimizer:
+  name: adam
+  lr: 0.002
+  weight_decay: 0.0001
+  grad_clip_value: 1
+scheduler:
+  name: cosine
+  lr_gamma: 0.99
+  lr_min: 2e-05
+run:
+  experiment: fmnist_cnn_train
+  n_epochs: 50
+  batch_size: 32
+  use_cuda: 1
+  gpu_id: 0
+  deterministic: 1
+  random_state: 42
+  log_interval: 200
+  train_noise: 0
+  grad_clip: False
+  max_grad_value: 1
+  do_distill: False
+  compile: False
+quantize:
+  weight_bit: 8
+  input_bit: 8
+noise:
+  phase_bias: 0
+  phase_noise_std: 0
+  gamma_noise_std: 0
+  crosstalk_factor: 0.05
+  random_state: 42
+  weight_noise_std: 0.0
+  crosstalk_flag: 0
+  noise_flag: 0
+  crosstalk_scheduler:
+    interv_h: 14
+    interv_v: 120
+    interv_s: 7
+checkpoint:
+  save_best_model_k: 3
+  checkpoint_dir: fmnist/cnn/train
+  model_comment: row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-7_lh-14_run-4
+  resume: 0
+  restore_checkpoint: 
+  no_linear: 0
+model:
+  name: TeMPO_CNN
+  conv_cfg:
+    type: TeMPOBlockConv2d
+    mode: weight
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  linear_cfg:
+    type: TeMPOBlockLinear
+    mode: weight
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  norm_cfg:
+    type: BN2d
+    affine: True
+  act_cfg:
+    type: ReLU
+    inplace: True
+  kernel_list: [64, 64, 64]
+  kernel_size_list: [3, 3, 3]
+  hidden_list: []
+  stride_list: [1, 2, 1]
+  padding_list: [1, 1, 1]
+  pool_out_size: 5
+  dst_scheduler:
+    death_mode: magnitude
+    growth_mode: gradient
+    init_mode: uniform
+    density: 0.4
+debug:
+  verbose: 1
+  verboise: 1
+dst_scheduler:
+  death_rate: 0.5
+  growth_death_ratio: 1.0
+  death_rate_decay: cosine
+  death_mode: magnitude
+  growth_mode: gradient
+  redistribution_mode: None
+  spe_initial: None
+  pruning_type: structure_row
+  update_frequency: 1400
+  T_max: 0.8
+  density: 0.6
+  max_combinations: 100
+  init_mode: uniform
+  power_choice_margin: 2
+  splitter_biases: 90
+  node_spacing: [20, 100][0m
+[38;21m2024-04-28 18:17:16,975 - lsq.py[line:119] - INFO: LSQ Act quantizer: (mode: tensor_wise): initialize weight scale for int6 quantization with offset: True[0m
+[38;21m2024-04-28 18:17:16,986 - utils.py[line:1139] - INFO: LSQ Weight quantizer: (mode: tensor_wise): initialize weight scale for int8 quantization with offset: False[0m
+[38;21m2024-04-28 18:17:21,829 - lsq.py[line:119] - INFO: LSQ Act quantizer: (mode: tensor_wise): initialize weight scale for int6 quantization with offset: True[0m
+[38;21m2024-04-28 18:17:21,835 - utils.py[line:1139] - INFO: LSQ Weight quantizer: (mode: tensor_wise): initialize weight scale for int8 quantization with offset: False[0m
+[38;21m2024-04-28 18:17:21,847 - lsq.py[line:119] - INFO: LSQ Act quantizer: (mode: tensor_wise): initialize weight scale for int6 quantization with offset: True[0m
+[38;21m2024-04-28 18:17:21,850 - utils.py[line:1139] - INFO: LSQ Weight quantizer: (mode: tensor_wise): initialize weight scale for int8 quantization with offset: False[0m
+[38;21m2024-04-28 18:17:21,859 - lsq.py[line:119] - INFO: LSQ Act quantizer: (mode: tensor_wise): initialize weight scale for int6 quantization with offset: True[0m
+[38;21m2024-04-28 18:17:21,866 - utils.py[line:1139] - INFO: LSQ Weight quantizer: (mode: tensor_wise): initialize weight scale for int8 quantization with offset: False[0m
+[38;21m2024-04-28 18:17:21,897 - sparse_train.py[line:281] - INFO: TeMPO_CNN(
+  (features): Sequential(
+    (conv1): ConvBlock(
+      (conv): TeMPOBlockConv2d(
+        1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), miniblock=[1, 1, 16, 16], mode=weight
+        (input_quantizer): ActQuantizer_LSQ({'nbits': 6, 'mode': 'tensor_wise', 'signed': True, 'offset': True})
+        (weight_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+        (phase_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+      )
+      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (activation): ReLU(inplace=True)
+    )
+    (conv2): ConvBlock(
+      (conv): TeMPOBlockConv2d(
+        64, 64, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), miniblock=[1, 1, 16, 16], mode=weight
+        (input_quantizer): ActQuantizer_LSQ({'nbits': 6, 'mode': 'tensor_wise', 'signed': True, 'offset': True})
+        (weight_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+        (phase_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+      )
+      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (activation): ReLU(inplace=True)
+    )
+    (conv3): ConvBlock(
+      (conv): TeMPOBlockConv2d(
+        64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), miniblock=[1, 1, 16, 16], mode=weight
+        (input_quantizer): ActQuantizer_LSQ({'nbits': 6, 'mode': 'tensor_wise', 'signed': True, 'offset': True})
+        (weight_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+        (phase_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+      )
+      (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (activation): ReLU(inplace=True)
+    )
+  )
+  (pool2d): AdaptiveAvgPool2d(output_size=5)
+  (classifier): Sequential(
+    (fc1): LinearBlock(
+      (linear): TeMPOBlockLinear(
+        1600, 10, miniblock=[1, 1, 16, 16], mode=weight
+        (input_quantizer): ActQuantizer_LSQ({'nbits': 6, 'mode': 'tensor_wise', 'signed': True, 'offset': True})
+        (weight_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+        (phase_quantizer): WeightQuantizer_LSQ({'nbits': 8, 'mode': 'tensor_wise', 'signed': True, 'offset': False})
+      )
+    )
+  )
+)[0m
+[38;21m2024-04-28 18:17:21,898 - dst2.py[line:277] - INFO: structure_row does not support power optimization, growth_opts reduced to [][0m
+[38;21m2024-04-28 18:17:21,898 - dst2.py[line:310] - INFO: structure_row does not support power optimization, death_mode reduced to [][0m
+[38;21m2024-04-28 18:17:21,899 - dst2.py[line:397] - INFO: created pruning mask.[0m
+[38;21m2024-04-28 18:17:21,899 - dst2.py[line:1127] - INFO: structure_row not support power, init mode reduced to ['uniform'][0m
+[38;21m2024-04-28 18:17:21,899 - dst2.py[line:1152] - INFO: Total Model parameters: 74752[0m
+[38;21m2024-04-28 18:17:21,906 - dst2.py[line:1156] - INFO: Total parameters under density level of 0.6: 0.6023116438356164[0m
+[38;21m2024-04-28 18:17:21,910 - dst2.py[line:1163] - INFO: Scale up initialized weights by (weight_count/nonzeros) to maintain the same variance[0m
+[38;21m2024-04-28 18:17:21,910 - dst2.py[line:1172] - INFO: Zero counts:
+	{'features.conv1.conv_0': 496, 'features.conv2.conv_1': 14448, 'features.conv3.conv_2': 14784}[0m
+[38;21m2024-04-28 18:17:21,910 - dst2.py[line:1173] - INFO: Nonzero counts:
+	{'features.conv1.conv_0': 528, 'features.conv2.conv_1': 22416, 'features.conv3.conv_2': 22080}[0m
+[38;21m2024-04-28 18:17:21,910 - dst2.py[line:1174] - INFO: Param counts:
+	{'features.conv1.conv_0': 1024, 'features.conv2.conv_1': 36864, 'features.conv3.conv_2': 36864}[0m
+[38;21m2024-04-28 18:17:21,910 - dst2.py[line:399] - INFO: initialized pruning mask.[0m
+[38;21m2024-04-28 18:17:21,910 - sparse_train.py[line:328] - INFO: Number of parameters: 100954[0m
+[38;21m2024-04-28 18:17:21,910 - sparse_train.py[line:333] - INFO: Current checkpoint: ./checkpoint/fmnist/cnn/train/TeMPO_CNN_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-7_lh-14_run-4.pt[0m
+[38;21m2024-04-28 18:17:22,105 - sparse_train.py[line:356] - INFO: Experiment fmnist_cnn_train (2) starts. Run ID: (166e76bcce0c44d19ce638f132175313). PID: (104362). PPID: (104358). Host: (en4226598rl.eng.asu.edu)[0m
+{}
+/bin/sh: line 1: 104362 Terminated              python3 sparse_train.py configs/fmnist/cnn/train/sparse_train.yml --optimizer.lr=0.002 --run.random_state=42 --model.conv_cfg.w_bit=8 --model.linear_cfg.w_bit=8 --model.dst_scheduler.death_mode=magnitude --model.dst_scheduler.growth_mode=gradient --model.dst_scheduler.init_mode=uniform --model.dst_scheduler.density=0.4 --noise.crosstalk_scheduler.interv_s=7 --noise.crosstalk_scheduler.interv_h=14 --noise.noise_flag=0 --noise.crosstalk_flag=0 --model.conv_cfg.miniblock=[1,1,16,16] --model.linear_cfg.miniblock=[1,1,16,16] --model.conv_cfg.in_bit=6 --model.linear_cfg.in_bit=6 --checkpoint.model_comment=row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-7_lh-14_run-4

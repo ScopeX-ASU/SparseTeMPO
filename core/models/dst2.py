@@ -366,6 +366,7 @@ class DSTScheduler2(nn.Module):
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
+                    m.register_buffer(f"prune_mask", m.prune_mask["elem_mask"])
             logger.info(f"created pruning mask.")
             self.unstructure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
@@ -394,6 +395,8 @@ class DSTScheduler2(nn.Module):
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
+                    m.register_buffer(f"row_prune_mask", m.prune_mask["row_mask"])
+                    m.register_buffer(f"col_prune_mask", m.prune_mask["col_mask"])
             logger.info(f"created pruning mask.")
             self.structure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
@@ -555,7 +558,7 @@ class DSTScheduler2(nn.Module):
             )
             ## use crosstalk scheduler to compute the power with fitted curve of simulation data
             ## here we make sure angle is in the range of [-pi/2, pi/2]
-            p = self.modules[0].crosstalk_scheduler.calc_MZI_power(angle.data, reduction="none").sum(dim=sum_dims)
+            p = self.modules[0].crosstalk_scheduler.calc_MZI_power(angle.data, interv_s=10, reduction="none").sum(dim=sum_dims)
             # p = (
             #     ratios.sqrt_()
             #     .acos()
