@@ -11,7 +11,7 @@ dataset:
   img_height: 32
   img_width: 32
   in_channels: 3
-  num_classes: 10
+  num_classes: 100
   transform: augmented
   shuffle: 1
   augment: null

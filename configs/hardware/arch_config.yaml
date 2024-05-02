@@ -43,7 +43,7 @@ device:
     static_power: 0.15
     insertion_loss: 0.03
     length: 50
-    width: 10
+    width: 6
   direction_coupler:
     insertion_loss: 0.33
     length: 6.5
@@ -100,11 +100,11 @@ core:
       choice: 2
       sharing_factor: 1
     DAC:
-      choice: 3
+      choice: 2
     DAC_weight:
-      choice: 4
+      choice: 2
     DAC_switch:
-      choice: 4
+      choice: 2
     TIA:
       power: 3
       area: 50

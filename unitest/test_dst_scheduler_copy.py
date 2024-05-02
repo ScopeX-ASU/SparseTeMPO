@@ -23,7 +23,7 @@ def test_DST_scheduler(pruning_type="structure_col", death_mode="magnitude", gro
     train_loader, validation_loader, test_loader = builder.make_dataloader(
         splits=["train", "valid", "test"]
     )
-    configs.dataset.in_channels = 64
+    configs.dataset.in_channels = 16
     model = builder.make_model(
         device,
         model_cfg=configs.model,
@@ -41,13 +41,13 @@ def test_DST_scheduler(pruning_type="structure_col", death_mode="magnitude", gro
     dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
     
     # print("This is the power:", dst_scheduler.cal_ports_power(torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1]])))
-    dst_scheduler.set_magnitude_based_flag(False)
-    dst_scheduler.set_gradient_based_flag(False)
-    # print(dst_scheduler)
-    dst_scheduler.apply_mask()
-    x = torch.randn(1, 64, 8, 8, device=device)
-    y = model(x)
-    y.square().sum().backward()
+    # dst_scheduler.set_magnitude_based_flag(False)
+    # dst_scheduler.set_gradient_based_flag(False)
+    # # print(dst_scheduler)
+    # dst_scheduler.apply_mask()
+    # x = torch.randn(1, 16, 8, 8, device=device)
+    # y = model(x)
+    # y.square().sum().backward()
     # for name, mask in dst_scheduler.masks.items():
     #     weight = dst_scheduler.params[name]
     #     # # print(weight)
@@ -57,14 +57,14 @@ def test_DST_scheduler(pruning_type="structure_col", death_mode="magnitude", gro
     #     new_mask = dst_scheduler.row_only_magnitude_death(mask, weight, name)
     #     print(new_mask["row_mask"])
     #     break
-    pruning_type = dst_scheduler.pruning_type
-    death_mode = dst_scheduler.death_mode
-    growth_mode = dst_scheduler.growth_mode
+    # pruning_type = dst_scheduler.pruning_type
+    # death_mode = dst_scheduler.death_mode
+    # growth_mode = dst_scheduler.growth_mode
     # dst_scheduler.plot_mask(filename=f"{pruning_type}_D-{death_mode}_G-{growth_mode}_before_mask", save_fig=True)
-    dst_scheduler.update_death_mask()
+    # dst_scheduler.update_death_mask()
     # dst_scheduler.plot_mask(filename=f"{pruning_type}_D-{death_mode}_G-{growth_mode}_after_death_mask", save_fig=True)
-    dst_scheduler.update_growth_mask()
-    dst_scheduler.apply_mask()
+    # dst_scheduler.update_growth_mask()
+    # dst_scheduler.apply_mask()
     # dst_scheduler.plot_mask(filename=f"{pruning_type}_D-{death_mode}_G-{growth_mode}_after_growth_mask", save_fig=True)
         
 if __name__ == "__main__":
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     # )
 
     test_DST_scheduler(
-        pruning_type="structure_row_col",
+        pruning_type="structure_row",
         death_mode="magnitude_power",
         growth_mode="gradient_power",
     )

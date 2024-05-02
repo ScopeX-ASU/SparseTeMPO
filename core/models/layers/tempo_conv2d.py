@@ -67,6 +67,9 @@ class TeMPOBlockConv2d(ONNBaseLayer):
     bias: Optional[Tensor]
     miniblock: Tuple[int, int, int, int]
     mode: str
+    row_prune_mask: Tensor | None
+    col_prune_mask: Tensor | None
+    prune_mask: Tensor | None
 
     def __init__(
         self,
@@ -156,7 +159,8 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.set_noise_flag(True)
         self.set_enable_remap(False)
         self.set_light_redist(False)
-        self.set_power_gating(False)
+        self.set_input_power_gating(False, ER=6)
+        self.set_output_power_gating(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
         self.switch_power_scheduler = switch_power_scheduler
@@ -303,4 +307,12 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             s += ", miniblock={miniblock}"
         if self.mode is not None:
             s += ", mode={mode}"
-        return s.format(**self.__dict__)
+        
+        s = s.format(**self.__dict__)
+        if hasattr(self, "row_prune_mask") and self.row_prune_mask is not None:
+            s += f", row_mask={self.row_prune_mask.shape}"
+        if hasattr(self, "col_prune_mask") and self.col_prune_mask is not None:
+            s += f", col_mask={self.col_prune_mask.shape}"
+        if hasattr(self, "prune_mask") and self.prune_mask is not None:
+            s += f", prune_mask=True"
+        return s

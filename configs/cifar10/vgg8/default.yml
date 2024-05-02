@@ -23,7 +23,7 @@ aux_criterion: null
 
 optimizer:
   name: adamw
-  lr: 0.002
+  lr: 0.02
   weight_decay: 0.01
   grad_clip_value: 1
 

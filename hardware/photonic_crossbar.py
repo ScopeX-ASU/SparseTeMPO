@@ -8,6 +8,7 @@ import numpy as np
 import math
 from .photonic_core_base import PhotonicCore
 import argparse
+import torch
 from pyutils.config import configs
 # from core.models.layers.utils import MZIPowerEvaluator
 
@@ -649,7 +650,8 @@ class PhotonicCrossbar(PhotonicCore):
 
                     # print(RC_empty_rows, RC_empty_cols, total_empty_elemetns)
                 else:
-                    switch_power = RC_empty_rows = RC_empty_cols = total_empty_elemetns = 0
+                    switch_power = 0
+                    RC_empty_rows = RC_empty_cols = total_empty_elemetns = [torch.zeros(1)]*(R*C)
 
                 # Get all energy besides weight MZI
                 input_power_dac_total = input_power_modulation_total = core_photo_detector_power_total = core_TIA_power_total = core_power_adc_total = 0
