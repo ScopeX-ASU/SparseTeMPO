@@ -151,7 +151,7 @@ def plot_crosstalk():
         ],  # a * exp(b*x)
         interv_h=25,
         interv_v=120,
-        interv_s=19,
+        interv_s=9,
         device=device,
     )
     layer.crosstalk_scheduler = crosstalk_scheduler
@@ -166,7 +166,7 @@ def plot_crosstalk():
     phase_nmaes_std = []
     layer.set_crosstalk_noise(True)
     interv_h_minmax = crosstalk_scheduler.ps_width + crosstalk_scheduler.interv_s, 41
-    interv_h_range = np.arange(*interv_h_minmax)
+    interv_h_range = np.arange(*interv_h_minmax, 2)
     with torch.no_grad():
         for interv_h in interv_h_range:
             layer.crosstalk_scheduler.set_spacing(interv_h=interv_h)
@@ -207,9 +207,10 @@ def plot_crosstalk():
         ax=ax,
         xrange=[interv_h_minmax[0], interv_h_minmax[1] + 0.1, 5],
         xlimit=[interv_h_minmax[0] - 1, interv_h_minmax[1]],
-        yrange=[0, 0.35, 0.1],
+        yrange=[0, 0.25, 0.1],
         xformat="%.0f",
         yformat="%.1f",
+        # yscale="log",
         figscale=[0.65, 0.65 * 9.1 / 8],
         fontsize=10,
         linewidth=1,
@@ -234,9 +235,10 @@ def plot_crosstalk():
         ax=ax,
         xrange=[interv_h_minmax[0], interv_h_minmax[1] + 0.1, 5],
         xlimit=[interv_h_minmax[0] - 1, interv_h_minmax[1]],
-        yrange=[0, 0.35, 0.1],
+        yrange=[0, 0.25, 0.1],
         xformat="%.0f",
         yformat="%.1f",
+        # yscale="log",
         figscale=[0.65, 0.65 * 9.1 / 8],
         fontsize=10,
         linewidth=1,
@@ -488,6 +490,6 @@ if __name__ == "__main__":
     # for sp_mode in ["uniform", "topk", "IS"]:
     #     for sa_mode in ["first_grad", "second_grad"]:
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
-    # plot_crosstalk()
+    plot_crosstalk()
     # plot_spacing()
-    plot_light_redist()
+    # plot_light_redist()
