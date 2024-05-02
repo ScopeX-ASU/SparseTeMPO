@@ -77,6 +77,7 @@ class ONNBaseLayer(nn.Module):
     def reset_parameters(self, mode=None) -> None:
         mode = mode or self.mode
         if mode in {"weight"}:
+            # init.kaiming_normal_(self.weight.data)
             if hasattr(self, "kernel_size"):  # for conv2d
                 weight = nn.Conv2d(
                     self.in_channels,
@@ -485,20 +486,20 @@ class ONNBaseLayer(nn.Module):
                 ## reconstruct noisy weight
                 weight_noisy = mzi_phase_to_out_diff(phase).mul(S_scale[..., None])
                 if self._enable_output_power_gating and self.prune_mask is not None:
-                    print("no output gating")
-                    print_stat((weight_noisy - weight.data).abs())
+                    # print("no output gating")
+                    # print_stat((weight_noisy - weight.data).abs())
                     weight_noisy = (
                         weight_noisy * self.prune_mask["row_mask"]
                     )  ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
-                    print("w/ output gating")
-                    print_stat((weight_noisy - weight.data).abs())
+                    # print("w/ output gating")
+                    # print_stat((weight_noisy - weight.data).abs())
                 if self._enable_input_power_gating and self.prune_mask is not None:
                     ratio = 1/10**(self._input_modulator_ER / 10)
-                    print("no input gating")
-                    print_stat((weight_noisy - weight.data).abs())
+                    # print("no input gating")
+                    # print_stat((weight_noisy - weight.data).abs())
                     weight_noisy = weight_noisy * self.prune_mask["col_mask"].float().add(ratio).clamp(max=1)
-                    print(f"w/ input gating {ratio}")
-                    print_stat((weight_noisy - weight.data).abs())
+                    # print(f"w/ input gating {ratio}")
+                    # print_stat((weight_noisy - weight.data).abs())
 
                 if enable_ste:
                     weight = STE.apply(
