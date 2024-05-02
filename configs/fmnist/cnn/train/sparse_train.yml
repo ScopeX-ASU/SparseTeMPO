@@ -49,7 +49,7 @@ noise:
   crosstalk_scheduler:
     interv_h: 20
     interv_v: 120
-    interv_s: 10
+    interv_s: 9
 
 checkpoint:
   save_best_model_k: 3

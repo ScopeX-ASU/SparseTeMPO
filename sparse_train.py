@@ -328,6 +328,13 @@ def main() -> None:
         metric_name="acc",
         format="{:.2f}",
     )
+    saver_for_last_epoch = BestKModelSaver(
+        k=int(configs.checkpoint.save_best_model_k),
+        descend=True,
+        truncate=2,
+        metric_name="acc",
+        format="{:.2f}",
+    )
     grad_scaler = amp.GradScaler(enabled=getattr(configs.run, "fp16", False))
     lg.info(f"Number of parameters: {count_parameters(model)}")
 
@@ -443,15 +450,16 @@ def main() -> None:
                 mixup_fn=test_mixup_fn,
                 fp16=grad_scaler._enabled,
             )
-            if dst_scheduler is not None and dst_scheduler.death_rate == 0.0:
-                saver.save_model(
-                    getattr(model, "_orig_mod", model), # remove compiled wrapper
-                    accv[-1],
-                    epoch=epoch,
-                    path=checkpoint,
-                    save_model=False,
-                    print_msg=True,
-                )
+            if dst_scheduler is not None: 
+                if epoch > (configs.run.n_epochs * configs.dst_scheduler.T_max):
+                    saver.save_model(
+                        getattr(model, "_orig_mod", model), # remove compiled wrapper
+                        accv[-1],
+                        epoch=epoch,
+                        path=checkpoint,
+                        save_model=False,
+                        print_msg=True,
+                    )
             else:
                 saver.save_model(
                     getattr(model, "_orig_mod", model), # remove compiled wrapper
@@ -463,9 +471,9 @@ def main() -> None:
                 )
 
             if epoch == configs.run.n_epochs:
-                saver.save_model(
+                saver_for_last_epoch.save_model(
                     getattr(model, "_orig_mod", model), # remove compiled wrapper
-                    [],
+                    accv[-1],
                     epoch=epoch,
                     path=checkpoint,
                     save_model=False,
