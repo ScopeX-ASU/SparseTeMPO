@@ -443,15 +443,16 @@ def main() -> None:
                 mixup_fn=test_mixup_fn,
                 fp16=grad_scaler._enabled,
             )
-            if dst_scheduler is not None and dst_scheduler.death_rate == 0.0:
-                saver.save_model(
-                    getattr(model, "_orig_mod", model), # remove compiled wrapper
-                    accv[-1],
-                    epoch=epoch,
-                    path=checkpoint,
-                    save_model=False,
-                    print_msg=True,
-                )
+            if dst_scheduler is not None:
+                if dst_scheduler.death_rate == 0.0:
+                    saver.save_model(
+                        getattr(model, "_orig_mod", model), # remove compiled wrapper
+                        accv[-1],
+                        epoch=epoch,
+                        path=checkpoint,
+                        save_model=False,
+                        print_msg=True,
+                    )
             else:
                 saver.save_model(
                     getattr(model, "_orig_mod", model), # remove compiled wrapper
@@ -463,14 +464,10 @@ def main() -> None:
                 )
 
             if epoch == configs.run.n_epochs:
-                saver.save_model(
-                    getattr(model, "_orig_mod", model), # remove compiled wrapper
-                    [],
-                    epoch=epoch,
-                    path=checkpoint,
-                    save_model=False,
-                    print_msg=True,
-                )
+                final_ckpt = checkpoint[:-3] + f"_acc-{accv[-1]:.2f}_epoch-{epoch}.pt"
+                torch.save({"model": None, "state_dict": getattr(model, "_orig_mod", model).state_dict()},
+                           final_ckpt)
+                lg.info(f"Final checkpoint saved at {final_ckpt}")
 
             # model.set_noise_flag(True)
             # model.set_crosstalk_noise(True)
