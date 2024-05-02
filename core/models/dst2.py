@@ -240,10 +240,11 @@ class DSTScheduler2(nn.Module):
         pruning_type: str = "structure_row",
         pi_shift_power: float = 30,
         power_choice_margin: int = 2,
-        ADC_power: float = 7.5,
+        ADC_power: float = 7.4,
         TIA_power: float = 3,
-        HDAC_power: float = 6.43,
-        first_layer_pruning=True,
+        HDAC_power: float = 5.74,
+        skip_first_layer=True,
+        skip_last_layer = True,
         update_frequency: int = 100,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
@@ -288,7 +289,8 @@ class DSTScheduler2(nn.Module):
         self.T_max = T_max
         self.group = group
         self.max_combinations = max_combinations
-        self.first_layer_pruning = first_layer_pruning
+        self.skip_first_layer = skip_first_layer
+        self.skip_last_layer = skip_last_layer
         self.steps = 0
         self.device = device
 
@@ -349,12 +351,30 @@ class DSTScheduler2(nn.Module):
         pruning_type: str | None = None,
     ):
         pruning_type = pruning_type or self.pruning_type
+
+        first_conv_idx = None
+        last_linear_idx = None
+        print(module)
+        if self.skip_first_layer:
+            for idx, (name, m) in enumerate(module.named_modules()):
+                if isinstance(m, module._conv) and first_conv_idx is None:
+                    first_conv_idx = idx
+                    print("First Layer Conv Idx:", first_conv_idx)
+                    break
+        
+        if self.skip_last_layer:
+            for idx, (name, m) in enumerate(module.named_modules()):
+                if isinstance(m, module._linear):
+                    last_linear_idx = idx
+                    print("Last Layer Linear Idx:", last_linear_idx)
+
         if pruning_type in {"unstructure"}:
             self.modules.append(module)
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
-            for name, m in module.named_modules():
-                if isinstance(m, module._conv):  # no last fc layer
+            for idx, (name, m) in enumerate(module.named_modules()):
+                if (isinstance(m, module._conv) and idx != first_conv_idx) or \
+                (isinstance(m, module._linear) and idx != last_linear_idx):
                     name_cur = name + "_" + str(index)
                     index += 1
                     self.names.append(name_cur)
@@ -371,12 +391,13 @@ class DSTScheduler2(nn.Module):
             self.unstructure_init(mode=init_mode, density=density, mask_file=mask_path)
             logger.info(f"initialized pruning mask.")
         elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
-
             self.modules.append(module)
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
-            for name, m in module.named_modules():
-                if isinstance(m, module._conv):
+            for idx, (name, m) in enumerate(module.named_modules()):
+                if (isinstance(m, module._conv) and idx != first_conv_idx) or \
+                (isinstance(m, module._linear) and idx != last_linear_idx):
+                    print(idx)
                     name_cur = name + "_" + str(index)
                     index += 1
                     self.names.append(name_cur)
@@ -399,6 +420,8 @@ class DSTScheduler2(nn.Module):
                     m.register_buffer(f"col_prune_mask", m.prune_mask["col_mask"])
             logger.info(f"created pruning mask.")
             self.structure_init(mode=init_mode, density=density, mask_file=mask_path)
+
+            print(self.modules)
             logger.info(f"initialized pruning mask.")
 
         else:
@@ -433,7 +456,7 @@ class DSTScheduler2(nn.Module):
         elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
             self.update_and_apply_mask(pruning_type, indicator_list)
             _, _ = self.update_fired_masks(pruning_type="structure")
-
+            self.print_nonzero_counts()
         else:
             raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
 
@@ -1009,7 +1032,7 @@ class DSTScheduler2(nn.Module):
         return min_power_patterns, min_power
 
     def _structure_init_power_crosstalk(
-        self, density: float = 0.05, opts: List = ["power", "crosstalk"]
+        self, density: float = 0.05, opts: List = ["power", "crosstalk",]
     ) -> None:
         if density == 1:
             return
@@ -1186,8 +1209,6 @@ class DSTScheduler2(nn.Module):
             "structure_row_col",
         }:
             for name in self.masks:
-                if not self.first_layer_pruning and "conv1" in name:
-                    continue
                 mask = self.masks[name]
                 weight = self.params[name]
                 weight.data *= mask

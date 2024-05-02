@@ -42,6 +42,10 @@ noise:
   weight_noise_std: 0.0
   crosstalk_flag: False
   noise_flag: False
+  light_redist: False
+  input_power_gating: False
+  input_modulation_ER: 6
+  output_power_gating: False
 
 checkpoint:
   save_best_model_k: 3

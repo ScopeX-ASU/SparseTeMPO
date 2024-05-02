@@ -99,7 +99,7 @@ def test_DST_scheduler(pruning_type="structure_col", death_mode="magnitude", gro
     # print(next(iter(train_loader))[0].shape)
     cycle_dict = model.calc_weight_MZI_energy(x.shape, R=R, C=C, freq=work_freq)[3]
     layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
-
+    
     # print(layer_energy, layer_energy_breakdown)
     print("Layer Wise Total Energy:", layer_energy)
     print("Layer Wise Energy Breakdown:", layer_energy_breakdown)

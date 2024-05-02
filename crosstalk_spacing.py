@@ -10,7 +10,7 @@ import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
-from pyutils.config import configs
+from pyutils.config import configs, Config
 from pyutils.general import AverageMeter
 from pyutils.general import logger as lg
 from pyutils.torch_train import (
@@ -21,7 +21,8 @@ from pyutils.torch_train import (
     set_torch_deterministic,
 )
 from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
-
+from core.models.dst2 import MultiMask
+from hardware.photonic_crossbar import PhotonicCrossbar
 from core import builder
 from core.datasets.mixup import Mixup, MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
@@ -238,8 +239,20 @@ def main() -> None:
 
     configs.load(args.config, recursive=True)
     configs.update(opts)
+    arch_config = Config()
+    arch_config.load("./configs/hardware/arch_config.yaml")
+    configs.update({"arch": arch_config.dict()})
     lg.info(configs)
-
+    configs.arch.core.precision.in_bit = in_bit = configs.model.conv_cfg.in_bit
+    configs.arch.core.precision.w_bit = w_bit = configs.model.conv_cfg.w_bit
+    configs.arch.core.precision.act_bit = act_bit = configs.model.conv_cfg.w_bit
+    r ,c, k1, k2 = configs.model.conv_cfg.miniblock
+    configs.arch.core.width = k2
+    configs.arch.core.height = k1
+    configs.arch.arch.r = r
+    configs.arch.arch.c = c
+    work_freq = configs.arch.core.work_freq
+    hw = PhotonicCrossbar(k2, k1, 1, in_bit, w_bit, act_bit, w_bit, configs.arch)
     if torch.cuda.is_available() and int(configs.run.use_cuda):
         torch.cuda.set_device(configs.run.gpu_id)
         device = torch.device("cuda:" + str(configs.run.gpu_id))
@@ -276,7 +289,6 @@ def main() -> None:
     )
     ## dummy forward to initialize quantizer
     model(next(iter(test_loader))[0].to(device))
-    lg.info(model)
 
     optimizer = builder.make_optimizer(
         get_parameter_group(model, weight_decay=float(configs.optimizer.weight_decay)),
@@ -312,6 +324,7 @@ def main() -> None:
         )
     else:
         dst_scheduler = None
+    lg.info(model)
     mixup_config = configs.dataset.augment
     mixup_fn = MixupAll(**mixup_config) if mixup_config is not None else None
     test_mixup_fn = (
@@ -365,7 +378,12 @@ def main() -> None:
                 configs.checkpoint.restore_checkpoint,
                 ignore_size_mismatch=int(configs.checkpoint.no_linear),
             )
-
+            for name, m in model.named_modules():
+                if isinstance(m, model._conv_linear):  # no last fc layer
+                    if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
+                        m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+                        percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
+                        print(percent)
             lg.info("Validate resumed model...")
             acc = test(
                 model,
@@ -403,13 +421,27 @@ def main() -> None:
         model.set_noise_flag(True)
         model.set_crosstalk_noise(True)
         model.set_output_noise(configs.noise.output_noise_std)
+        model.set_light_redist(configs.noise.light_redist)
+        model.set_input_power_gating(configs.noise.input_power_gating, configs.noise.input_modulation_ER)
+        model.set_output_power_gating(configs.noise.output_power_gating)
 
-        interv_s_minax = [7, 16]
+        interv_s_minax = [7, 12]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-        interv_h_s_minax = [1, 8]
+        interv_h_s_minax = [1, 6]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
+        R = configs.arch.arch.num_tiles
+        C = configs.arch.arch.num_pe_per_tile
+
+        mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
+
+        total_cycles = 0
+        for key, value in cycle_dict.items():
+            total_cycles += value[0]  
+
+        layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
+        
         acc_list = []
         avg_power_list = []
         for interv_s in interv_s_range:
@@ -439,17 +471,25 @@ def main() -> None:
                 acc = np.mean(accs)
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
-            next(iter(test_loader))[0].shape
-            avg_power_list.append(model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=8, C=8, freq=1)[-2])
+            # next(iter(test_loader))[0].shape
+            mzi_total_energy, mzi_energy_dict, _, _, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
+            for key in layer_energy:
+                layer_energy[key] += mzi_energy_dict[key]
+                layer_energy_breakdown[key]["MZI Power"] = mzi_energy_dict[key]
+                newtwork_energy_breakdown["MZI Power"] = mzi_total_energy
+                total_energy += mzi_total_energy
+
             
+
+
         acc_list = np.array(acc_list)
         avg_power_list = np.array(avg_power_list)
         print(acc_list.tolist())
         print(avg_power_list.tolist())
 
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_list.csv",  acc_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_acc_matrix.csv",  acc_list[:, -1].reshape([-1, 13]), delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/crosstalk_spacing_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}.csv",  acc_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}_acc_matrix.csv",  acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")

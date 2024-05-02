@@ -220,12 +220,19 @@ class TeMPO_Base(nn.Module):
             ):
                 layer.set_light_redist(flag)
 
-    def set_power_gating(self, flag: bool = True):
+    def set_input_power_gating(self, flag: bool = True, ER: float = 6) -> None:
         for layer in self.modules():
             if isinstance(layer, self._conv_linear) and hasattr(
-                layer, "set_power_gating"
+                layer, "set_input_power_gating"
             ):
-                layer.set_power_gating(flag)
+                layer.set_input_power_gating(flag, ER)
+    
+    def set_output_power_gating(self, flag: bool = True) -> None:
+        for layer in self.modules():
+            if isinstance(layer, self._conv_linear) and hasattr(
+                layer, "set_output_power_gating"
+            ):
+                layer.set_output_power_gating(flag)
 
     def set_gamma_noise(
         self, noise_std: float = 0.0, random_state: Optional[int] = None

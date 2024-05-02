@@ -131,10 +131,20 @@ def plot_lowrank_scanning2d_resnet():
 
 # plot_lowrank_scanning2d_resnet()
 
+def create_interleaved_binary_mask(m, n):
+    # Create a meshgrid of coordinates
+    rows = torch.arange(m).view(-1, 1)  # Column vector
+    cols = torch.arange(n).view(1, -1)  # Row vector
+
+    # Create the interleaved pattern using modulo operations
+    mask = (rows + cols) % 2  # Add row and column indices and take modulo 2
+
+    return mask
+
 
 def plot_crosstalk():
     device = "cuda:0"
-    layer = TeMPOBlockLinear(8000, 8, miniblock=[1, 1, 8, 8], device=device)
+    layer = TeMPOBlockLinear(8000, 8, miniblock=[1, 1, 16, 16], device=device)
 
     crosstalk_scheduler = CrosstalkScheduler(
         crosstalk_coupling_factor=[
@@ -149,7 +159,7 @@ def plot_crosstalk():
             0.2167267,
             -0.12747211,
         ],  # a * exp(b*x)
-        interv_h=25,
+        interv_h=20,
         interv_v=120,
         interv_s=9,
         device=device,
@@ -492,4 +502,5 @@ if __name__ == "__main__":
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
     plot_crosstalk()
     # plot_spacing()
+    print(create_interleaved_binary_mask(5, 5))
     # plot_light_redist()

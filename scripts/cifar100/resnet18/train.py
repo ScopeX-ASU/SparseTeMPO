@@ -15,33 +15,35 @@ from pyutils.config import configs
 
 dataset = "cifar100"
 model = "resnet18"
-root = f"log/{dataset}/{model}"
-script = "train.py"
+root = f"log/{dataset}/{model}/DensePTC"
+script = "sparse_train.py"
 config_file = f"configs/{dataset}/{model}/train/train.yml"
 configs.load(config_file, recursive=True)
 
 
 def task_launcher(args):
-    pres = ["python3", script, config_file]
-    lr, w_bit, in_bit, id = args
+    lr, w_bit, in_bit, conv_block, gpu_id, id= args
+    pres = [f"export CUDA_VISIBLE_DEVICES={gpu_id};", "python3", script, config_file]
     with open(
         os.path.join(
-            root, f"{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_run-{id}.log"
+            root, f"{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_run-{id}_cb-{conv_block}.log"
         ),
         "w",
     ) as wfid:
         exp = [
             f"--optimizer.lr={lr}",
-            f"--run.random_state={41+id}",
+            f"--run.random_state={42}",
             f"--model.conv_cfg.w_bit={w_bit}",
             f"--model.linear_cfg.w_bit={w_bit}",
             f"--model.conv_cfg.in_bit={in_bit}",
             f"--model.linear_cfg.in_bit={in_bit}",
-            f"--checkpoint.model_comment=lr-{lr:.4f}",
+            f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
+            f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
+            f"--checkpoint.model_comment=lr-{lr:.4f}_wb-{w_bit}_ib-{in_bit}_cb-[{','.join([str(i) for i in conv_block])}]_run-{id}",
         ]
         cmd = " ".join(pres + exp)
         logger.info(f"running command:\n\t{cmd}")
-        subprocess.call(pres + exp, stderr=wfid, stdout=wfid)
+        subprocess.call(cmd, stderr=wfid, stdout=wfid, shell=True)
 
 
 if __name__ == "__main__":
@@ -49,7 +51,7 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (1, 8, 8, 1),
+        (0.002, 8, 6, [1, 1, 16, 16], 2, 3),
     ]
     with Pool(1) as p:
         p.map(task_launcher, tasks)

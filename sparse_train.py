@@ -278,7 +278,6 @@ def main() -> None:
             int(configs.run.random_state) if int(configs.run.deterministic) else None
         ),
     )
-    lg.info(model)
 
     optimizer = builder.make_optimizer(
         get_parameter_group(model, weight_decay=float(configs.optimizer.weight_decay)),
@@ -308,11 +307,16 @@ def main() -> None:
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
         print(f"Register hidden state hooks for teacher and students")
 
+    if configs.dst_scheduler == "None":
+        configs.dst_scheduler = None
+
     if configs.dst_scheduler is not None:
         dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
     else:
         dst_scheduler = None
+    lg.info(model)
     mixup_config = configs.dataset.augment
+    print("mix config:", mixup_config)
     mixup_fn = MixupAll(**mixup_config) if mixup_config is not None else None
     test_mixup_fn = (
         MixupAll(**configs.dataset.test_augment) if mixup_config is not None else None
@@ -400,6 +404,7 @@ def main() -> None:
                 teacher = torch.compile(teacher)
 
         for epoch in range(1, int(configs.run.n_epochs) + 1):
+            print("Here?")
             train(
                 model,
                 train_loader,
@@ -438,15 +443,34 @@ def main() -> None:
                 mixup_fn=test_mixup_fn,
                 fp16=grad_scaler._enabled,
             )
-            saver.save_model(
-                getattr(model, "_orig_mod", model), # remove compiled wrapper
-                accv[-1],
-                epoch=epoch,
-                path=checkpoint,
-                save_model=False,
-                print_msg=True,
-            )
+            if dst_scheduler is not None and dst_scheduler.death_rate == 0.0:
+                saver.save_model(
+                    getattr(model, "_orig_mod", model), # remove compiled wrapper
+                    accv[-1],
+                    epoch=epoch,
+                    path=checkpoint,
+                    save_model=False,
+                    print_msg=True,
+                )
+            else:
+                saver.save_model(
+                    getattr(model, "_orig_mod", model), # remove compiled wrapper
+                    accv[-1],
+                    epoch=epoch,
+                    path=checkpoint,
+                    save_model=False,
+                    print_msg=True,
+                )
 
+            if epoch == configs.run.n_epochs:
+                saver.save_model(
+                    getattr(model, "_orig_mod", model), # remove compiled wrapper
+                    [],
+                    epoch=epoch,
+                    path=checkpoint,
+                    save_model=False,
+                    print_msg=True,
+                )
 
             # model.set_noise_flag(True)
             # model.set_crosstalk_noise(True)

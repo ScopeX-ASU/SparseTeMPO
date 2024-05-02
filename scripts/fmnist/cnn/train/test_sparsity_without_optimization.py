@@ -28,19 +28,19 @@ from pyutils.config import configs
 
 dataset = "fmnist"
 model = "cnn"
-root = f"log/{dataset}/{model}/test_structural_pruning_without_optimizaiton"
+root = f"log/{dataset}/{model}/test_structural_pruning_without_optimization"
 script = "crosstalk_spacing.py"
 config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
 
 
 def task_launcher(args):
-    lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, interv_s, interv_h, id, gpu_id = args
+    lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, interv_s, interv_h, redist, input_gate, output_gate, out_noise_std, ckpt, id, gpu_id = args
     pres = [f"export CUDA_VISIBLE_DEVICES={gpu_id};", "python3", script, config_file]
     with open(
         os.path.join(
             root,
-            f"{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_dm-{death_mode}_gm-{growth_mode}_im-{init_mode}_cb-{conv_block}_{row_col}-without-opt_den-{density}_ls-{interv_s}_lh-{interv_h}_run-{id}.log",
+            f"{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_dm-{death_mode}_gm-{growth_mode}_im-{init_mode}_cb-{conv_block}_{row_col}-without-opt_den-{density}_ls-{interv_s}_lh-{interv_h}_rd-{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_run-{id}.log",
         ),
         "w",
     ) as wfid:
@@ -55,16 +55,22 @@ def task_launcher(args):
             f"--dst_scheduler.init_mode={init_mode}",
             f"--dst_scheduler.density={density}",
             f"--dst_scheduler.pruning_type={row_col}",
-            f"--noise.crosstalk_scheduler.interv_s={interv_s}",
-            f"--noise.crosstalk_scheduler.interv_h={interv_h}",
-            # f"--model.dst_scheduler={None}",
-            # f"--dst_scheduler={None}",
+            # f"--noise.crosstalk_scheduler.interv_s={interv_s}",
+            # f"--noise.crosstalk_scheduler.interv_h={interv_h}",
+            f"--noise.noise_flag={crosstalk}",
+            f"--noise.crosstalk_flag={crosstalk}",
+            f"--noise.output_noise_std={out_noise_std}",
+            f"--loginfo=rd-{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_id-{id}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.conv_cfg.in_bit={in_bit}",
             f"--model.linear_cfg.in_bit={in_bit}",
+            f"--noise.light_redist={redist}",
+            f"--noise.input_power_gating={input_gate}",
+            f"--noise.output_power_gating={output_gate}",
             f"--checkpoint.resume={True}",
-            f"--checkpoint.restore_checkpoint=./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-7_lh-14_run-4_acc-91.53_epoch-12.pt",
+            f"--checkpoint.restore_checkpoint={ckpt}",
+            # f"--checkpoint.restore_checkpoint=./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-10_lh-120_run-4_acc-91.85_epoch-39.pt",
             f"--checkpoint.model_comment=pretrain_lr-{lr:.4f}_wb-{w_bit}_ib-{in_bit}_cb-[{','.join([str(i) for i in conv_block])}]_run-{id}",
         ]
         cmd = " ".join(pres + exp)
@@ -76,9 +82,15 @@ def task_launcher(args):
 if __name__ == "__main__":
     ensure_dir(root)
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
-
+    # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt
+    # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt
     tasks = [
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 2, 0), 
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt", 6, 0), 
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt", 6, 0), 
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt", 6, 0),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-10_lh-120_run-4_acc-91.97_epoch-40.pt", 6, 0),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-10_lh-120_run-4_acc-91.97_epoch-40.pt", 6, 0),  
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 16, 2, 0), 
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 18, 92.00, 26, 2, 0), 
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 20, 91.90, 43, 2, 0),

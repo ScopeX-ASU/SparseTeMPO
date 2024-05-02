@@ -34,6 +34,8 @@ quantize:
   weight_bit: 8
   input_bit: 8
 
+loginfo: "logs.csv"
+
 noise:
   phase_bias: 0
   phase_noise_std: 0

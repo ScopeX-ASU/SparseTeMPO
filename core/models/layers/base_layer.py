@@ -289,29 +289,47 @@ class ONNBaseLayer(nn.Module):
         ## enable or disable light redistribution if prune_mask is available
         self._enable_light_redist = flag
 
-    def set_power_gating(self, flag: bool = False) -> None:
-        ## enable or disable power gating for light shutdown and TIA/ADC shutdown if prune_mask is available
-        self._enable_power_gating = flag
+    def set_input_power_gating(self, flag: bool = False, ER: float = 6) -> None:
+        ## enable or disable power gating for light shutdown if prune_mask is available
+        ## ER 6dB SL-MZM,
+        self._enable_input_power_gating = flag
+        self._input_modulator_ER = ER
+    
+    def set_output_power_gating(self, flag: bool = False) -> None:
+        ## enable or disable power gating for TIA/ADC shutdown if prune_mask is available
+        self._enable_output_power_gating = flag
 
     def _add_output_noise(self, x) -> None:
         if self.output_noise_std > 1e-6:
-            if self._enable_light_redist and self.prune_mask is not None:
+            if (self._enable_light_redist or self._enable_output_power_gating) and self.prune_mask is not None:
                 r, k1, k2 = self.miniblock[0], self.miniblock[-2], self.miniblock[-1]
-                q, c = self.weight.shape[1], self.weight.shape[3]  # q*c
-                col_mask = self.prune_mask["col_mask"]  # [p,q,1,c,1,k2]
-                col_nonzeros = col_mask.sum(-1).squeeze(-1)  # [p,q,1,c]
-                factor = col_nonzeros / k2  # [p,q,1,c]
-                row_mask = self.prune_mask["row_mask"]  # [p,q,r,1,k1,1]
-                row_mask = row_mask[..., 0, :, :].flatten(2, 3)  # [p,q,r*k1, 1]
-                factor = factor * row_mask  # [p,q,r*k1, c]
+                p, q, c = self.weight.shape[0], self.weight.shape[1], self.weight.shape[3]  # q*c
+                if self._enable_light_redist:
+                    col_mask = self.prune_mask["col_mask"]  # [p,q,1,c,1,k2]
+                    col_nonzeros = col_mask.sum(-1).squeeze(-1)  # [p,q,1,c]
+                    factor = col_nonzeros / k2  # [p,q,1,c]
+                else:
+                    factor = torch.ones([p,q,1,c], device=self.device) # [p,q,1,c]
+
+                print(factor.mean())
+                if self._enable_output_power_gating:
+                    row_mask = self.prune_mask["row_mask"]  # [p,q,r,1,k1,1]
+                    row_mask = row_mask[..., 0, :, :].flatten(2, 3)  # [p,q,r*k1, 1]
+                    factor = factor * row_mask  # [p,q,r*k1, c]
+                else:
+                    factor = factor.expand(-1, -1, r*k1, -1) # [p,q,r*k1, c]
 
                 factor = factor.permute(0, 2, 1, 3).flatten(0, 1)[
                     : x.shape[1]
                 ]  # [p*r*k1, q, c] -> [out_c, q, c]
+                print(row_mask.sum()/row_mask.numel())
+                print(factor.sum()/factor.numel())
 
                 std = factor.mul(k2**0.5).square().sum([-2, -1]).sqrt()
 
-                std *= self.output_noise_std  # [out_c]
+                std *= self.output_noise_std # [out_c]
+                print("no light dist no out gating: std: ", np.sqrt(np.prod(self.weight.shape[1::2])) * self.output_noise_std)
+                print("w/ light dist w/ out gating: std: ", std.mean().item(), std.min().item(), std.max().item())
 
                 noise = torch.randn_like(x)  # [bs, out_c, h, w] or [bs, out_c, q, c]
 
@@ -466,10 +484,22 @@ class ONNBaseLayer(nn.Module):
 
                 ## reconstruct noisy weight
                 weight_noisy = mzi_phase_to_out_diff(phase).mul(S_scale[..., None])
-                if self._enable_power_gating and self.prune_mask is not None:
+                if self._enable_output_power_gating and self.prune_mask is not None:
+                    print("no output gating")
+                    print_stat((weight_noisy - weight.data).abs())
                     weight_noisy = (
-                        weight_noisy * self.prune_mask.data
+                        weight_noisy * self.prune_mask["row_mask"]
                     )  ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
+                    print("w/ output gating")
+                    print_stat((weight_noisy - weight.data).abs())
+                if self._enable_input_power_gating and self.prune_mask is not None:
+                    ratio = 1/10**(self._input_modulator_ER / 10)
+                    print("no input gating")
+                    print_stat((weight_noisy - weight.data).abs())
+                    weight_noisy = weight_noisy * self.prune_mask["col_mask"].float().add(ratio).clamp(max=1)
+                    print(f"w/ input gating {ratio}")
+                    print_stat((weight_noisy - weight.data).abs())
+
                 if enable_ste:
                     weight = STE.apply(
                         weight, weight_noisy
