@@ -64,7 +64,7 @@ model:
   conv_cfg:
     type: TeMPOBlockConv2d
     mode: "weight"
-    miniblock: [4, 4, 8, 8]
+    miniblock: [1, 1, 16, 16]
     w_bit: 32
     in_bit: 32
   # conv_cfg:
@@ -72,7 +72,7 @@ model:
   linear_cfg:
     type: TeMPOBlockLinear
     mode: "weight"
-    miniblock: [4, 4, 8, 8]
+    miniblock: [1, 1, 16, 16]
     w_bit: 32
     in_bit: 32
   # linear_cfg:

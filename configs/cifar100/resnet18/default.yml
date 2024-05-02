@@ -13,7 +13,7 @@ dataset:
   in_channels: 3
   num_classes: 100
   transform: augmented
-  shuffle: 1
+  shuffle: 0
   augment: null
 
 criterion:

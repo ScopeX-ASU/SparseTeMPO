@@ -123,12 +123,17 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.gamma = np.pi / self.v_pi**2
         self.w_bit = w_bit
         self.in_bit = in_bit
-        self.phase_noise_std = 1e-5
+        # self.phase_noise_std = 1e-5
         ### build trainable parameters
         self.build_parameters(mode)
         ### quantization tool
         self.input_quantizer = ActQuantizer_LSQ(
-            None, device=device, nbits=self.in_bit, offset=True, mode="tensor_wise"
+            None,
+            device=device,
+            nbits=self.in_bit,
+            offset=True,
+            signed=False,
+            mode="tensor_wise",
         )
         self.weight_quantizer = WeightQuantizer_LSQ(
             None,
@@ -155,8 +160,8 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.set_crosstalk_noise(False)
         self.set_weight_noise(0)
         self.set_output_noise(0)
-        self.set_enable_ste(True)
-        self.set_noise_flag(True)
+        self.set_enable_ste(False)
+        self.set_noise_flag(False)
         self.set_enable_remap(False)
         self.set_light_redist(False)
         self.set_input_power_gating(False, ER=6)
@@ -307,7 +312,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             s += ", miniblock={miniblock}"
         if self.mode is not None:
             s += ", mode={mode}"
-        
+
         s = s.format(**self.__dict__)
         if hasattr(self, "row_prune_mask") and self.row_prune_mask is not None:
             s += f", row_mask={self.row_prune_mask.shape}"

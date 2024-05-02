@@ -2,19 +2,20 @@ criterion:
   name: ce
 
 optimizer:
-  name: prodigy
-  lr: 1
-  weight_decay: 0.01
+  name: sgd
+  lr: 0.02
+  weight_decay: 0.0001
+  momentum: 0.9
 
 scheduler:
   name: cosine
   lr_gamma: 0.99
-  lr_min: 0.00002
+  lr_min: 0.0
 
 run:
   experiment: "cifar100_resnet18_train"
-  n_epochs: 100
-  batch_size: 32
+  n_epochs: 200
+  batch_size: 64
   use_cuda: 1
   gpu_id: 0
   deterministic: 1
