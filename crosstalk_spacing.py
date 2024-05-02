@@ -436,14 +436,26 @@ def main() -> None:
 
         mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
 
+        for name, m in model.named_modules():
+            if isinstance(m, model._conv):  # no last fc layer
+                if m.prune_mask is not None:
+                    print(m.prune_mask["row_mask"].cpu().numpy())
+
         total_cycles = 0
         for key, value in cycle_dict.items():
             total_cycles += value[0]  
 
-        layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
+        # layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
         
         acc_list = []
         avg_power_list = []
+        total_energy_list = []
+        layer_energy_list = []
+        layer_energy_breakdown_list = []
+        network_energy_breakdown_list = []
+        layer_power_list = []
+        layer_power_breakdown_list = []
+        network_power_breakdown_list = []
         for interv_s in interv_s_range:
             for interv_h_s in interv_h_s_range:
                 interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
@@ -472,24 +484,92 @@ def main() -> None:
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
             # next(iter(test_loader))[0].shape
+            layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
             mzi_total_energy, mzi_energy_dict, _, _, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
             for key in layer_energy:
                 layer_energy[key] += mzi_energy_dict[key]
                 layer_energy_breakdown[key]["MZI Power"] = mzi_energy_dict[key]
-                newtwork_energy_breakdown["MZI Power"] = mzi_total_energy
-                total_energy += mzi_total_energy
+             
+            newtwork_energy_breakdown["MZI Power"] = mzi_total_energy
+            total_energy += mzi_total_energy
 
+            layer_energy_np = np.array(list(layer_energy.items()), dtype='object')
+            layer_energy_breakdown_np = np.array(list(layer_energy_breakdown.items()), dtype='object')
+            newtwork_energy_breakdown_np = np.array(list(newtwork_energy_breakdown.items()), dtype='object')
+
+            layer_energy_list.append(layer_energy_np)
+            layer_energy_breakdown_list.append(layer_energy_breakdown_np)
+            network_energy_breakdown_list.append(newtwork_energy_breakdown_np)
+            total_energy_list.append(total_energy)
+
+            print(layer_energy)
+            print(layer_energy_breakdown)
+            print(newtwork_energy_breakdown)
+            print(total_energy)
+
+
+            for layer, components in layer_energy_breakdown.items():
+                    # print(layer_energy[layer])
+                    layer_energy[layer] = layer_energy[layer]/ (cycle_dict[layer][0] / work_freq / 1e9)
+                    for component, value in components.items():
+                            components[component] = value / (cycle_dict[layer][0] / work_freq / 1e9)
+
+            for key, value in newtwork_energy_breakdown.items():
+                newtwork_energy_breakdown[key] = value / (total_cycles / work_freq / 1e9)
+
+            total_energy = total_energy / (total_cycles / work_freq / 1e9)
             
+            print(layer_energy)
+            print(layer_energy_breakdown)
+            print(newtwork_energy_breakdown)
+            print(total_energy)
+
+            layer_power_np = np.array(list(layer_energy.items()), dtype='object')
+            layer_power_breakdown_np = np.array(list(layer_energy_breakdown.items()), dtype='object')
+            newtwork_power_breakdown_np = np.array(list(newtwork_energy_breakdown.items()), dtype='object')
+
+            layer_power_list.append(layer_power_np)
+            layer_power_breakdown_list.append(layer_power_breakdown_np)
+            network_power_breakdown_list.append(newtwork_power_breakdown_np)
+            avg_power_list.append(total_energy)
 
 
         acc_list = np.array(acc_list)
-        avg_power_list = np.array(avg_power_list)
-        print(acc_list.tolist())
-        print(avg_power_list.tolist())
 
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}.csv",  acc_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}_acc_matrix.csv",  acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]), delimiter=",", fmt="%.2f")
-        np.savetxt(f"./log/fmnist/cnn/test_structural_pruning_without_optimization/{configs.loginfo}_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
+        avg_power_list = np.array(avg_power_list)
+        layer_power_list = np.array(layer_power_list)
+        layer_power_breakdown_list = np.array(layer_power_breakdown_list)
+        network_power_breakdown_list = np.array(network_power_breakdown_list)
+
+        layer_energy_list = np.array(layer_energy_list)
+        layer_energy_breakdown_list = np.array(layer_energy_breakdown_list)
+        network_energy_breakdown_list = np.array(network_energy_breakdown_list)
+        total_energy_list = np.array(total_energy_list)
+
+        # print(acc_list.tolist())
+        # print(avg_power_list.tolist())
+        # print(layer_power_list.tolist())
+        # print(layer_power_breakdown_list.tolist())
+        # print(network_power_breakdown_list.tolist())
+        # print(layer_energy_list.tolist())
+        # print(layer_energy_breakdown_list.tolist())
+        # print(network_energy_breakdown_list.tolist())
+        # print(total_energy_list.tolist())
+
+
+
+
+        np.savetxt(f"{configs.loginfo}.csv",  acc_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}_acc_matrix.csv",  acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}_network_total_energy_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}_layer_power_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}_layer_energy_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
+        # np.savetxt(f"{configs.loginfo}_layer_energy_breakdown_list.txt", total_energy_list)
+        # np.savetxt(f"{configs.loginfo}_layer_power_breakdown_list.txt", total_energy_list)
+        # np.savetxt(f"{configs.loginfo}_network_energy_breakdown_list.txt", total_energy_list)
+        # np.savetxt(f"{configs.loginfo}_network_power_breakdown_list.txt", total_energy_list)
+
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")

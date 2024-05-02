@@ -470,6 +470,12 @@ def main() -> None:
                     print_msg=True,
                 )
 
+            for name, m in model.named_modules():
+                if isinstance(m, model._conv):  # no last fc layer
+                    if m.prune_mask is not None:
+                        print(m.prune_mask["row_mask"].cpu().numpy().tolist())
+
+
             if epoch == configs.run.n_epochs:
                 saver_for_last_epoch.save_model(
                     getattr(model, "_orig_mod", model), # remove compiled wrapper

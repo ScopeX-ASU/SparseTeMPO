@@ -246,6 +246,7 @@ class DSTScheduler2(nn.Module):
         skip_first_layer=True,
         skip_last_layer = True,
         update_frequency: int = 100,
+        keep_same: bool = False,
         T_max: int = 10000,
         group: str = "layer",  # layer, block wise magnitude sorting
         splitter_biases: float | List[int] = 90,
@@ -328,6 +329,7 @@ class DSTScheduler2(nn.Module):
         self.ADC_power = ADC_power
         self.TIA_power = TIA_power
         self.HDAC_power = HDAC_power
+        self.keep_same = keep_same
 
         # stats
         self.name2zeros = {}
@@ -416,6 +418,7 @@ class DSTScheduler2(nn.Module):
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
+                    self.layers[name_cur] = m
                     m.register_buffer(f"row_prune_mask", m.prune_mask["row_mask"])
                     m.register_buffer(f"col_prune_mask", m.prune_mask["col_mask"])
             logger.info(f"created pruning mask.")
@@ -450,11 +453,11 @@ class DSTScheduler2(nn.Module):
     ) -> None:
         pruning_type = pruning_type or self.pruning_type
         if pruning_type == "unstructure":
-            self.update_and_apply_mask()
+            self.update_and_apply_mask(keep_same=self.keep_same)
             _, _ = self.update_fired_masks()
             self.print_nonzero_counts()
         elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
-            self.update_and_apply_mask(pruning_type, indicator_list)
+            self.update_and_apply_mask(pruning_type, indicator_list, self.keep_same)
             _, _ = self.update_fired_masks(pruning_type="structure")
             self.print_nonzero_counts()
         else:
@@ -1008,7 +1011,9 @@ class DSTScheduler2(nn.Module):
     def _structure_init_random(self, density: float = 0.05) -> None:
         if self.pruning_type == "structure_row":
             for mask in self.masks.values():
-                mask["row_mask"].bernoulli_(p=density)
+                # mask["row_mask"].bernoulli_(p=density)
+                mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
+                print(mask["row_mask"])
 
         elif self.pruning_type == "structure_col":
             for mask in self.masks.values():
@@ -1296,13 +1301,13 @@ class DSTScheduler2(nn.Module):
             self.masks[name] = new_mask
 
     def update_and_apply_mask(
-        self, pruning_type: str | None = None, indicator_list=None
+        self, pruning_type: str | None = None, indicator_list=None, keep_same: bool = False
     ) -> None:
         # update pruning and growth masks
         pruning_type = pruning_type or self.pruning_type
-
-        self.update_death_mask(pruning_type)
-        self.update_growth_mask(pruning_type)
+        if not keep_same:
+            self.update_death_mask(pruning_type)
+            self.update_growth_mask(pruning_type)
         self.apply_mask()
 
     # remove part mask
@@ -1660,6 +1665,10 @@ class DSTScheduler2(nn.Module):
                 return mask
 
             ## till this point, we know self.death_opts = ["crosstalk"]
+            best_gain = float("-inf")
+            search_range = list(
+                combinations(range(num_row_select_candidates), num_row_select)
+            )
 
             old_layer_mzi_power = self.calc_weight_MZI_power(name, mask)
             def obj_fn(
@@ -2632,6 +2641,27 @@ class DSTScheduler2(nn.Module):
     """
                 UTILITY
     """
+
+    def generate_interleave_mask(self, mask: MultiMask, sparsity: float = 0.5, is_col: bool=False, device="cuda:0"):
+        p, q, r, _, k1, _ = mask["row_mask"].shape
+        _, _, _, c, _, k2 = mask["col_mask"].shape
+        
+        total_element = mask.data.numel()
+        row_turn_off_number = int(round((total_element - total_element * sparsity) / (c * k2) / (p * q)))
+        row_interleave_index = torch.tensor(list(range(0, r*k1, 2)) + list(range(1, r*k1, 2)))[:row_turn_off_number]
+        col_turn_off_number = int(round((total_element - total_element * sparsity) / (r * k1) / (p * q)))
+        col_interleave_index = torch.tensor(list(range(0, c*k2, 2)) + list(range(1, c*k2, 2)))[:col_turn_off_number]
+        row_mask = torch.ones(r*k1, dtype=bool)
+        col_mask = torch.ones(c*k2, dtype=bool)
+        row_mask[row_interleave_index] = 0
+        col_mask[col_interleave_index] = 0
+        row_mask = row_mask.reshape(r, 1, k1, 1).expand(p, q, -1, -1, -1, -1)
+        col_mask = col_mask.reshape(1, c, 1, k2).expand(p, q, -1, -1, -1, -1)
+        # if is_col:
+        #     mask["col_mask"] = col_mask.to(device)
+        # else:
+        #     mask["row_mask"] = row_mask.to(device)
+        return col_mask.to(device) if is_col else row_mask.to(device)
 
     def get_gradient_for_weights(self, weight):
         grad = weight.grad

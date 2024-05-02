@@ -28,7 +28,7 @@ from pyutils.config import configs
 
 dataset = "fmnist"
 model = "cnn"
-root = f"log/{dataset}/{model}/test_structural_pruning_without_optimization"
+root = f"log/{dataset}/{model}/test_structural_pruning_without_optimization_interleave"
 script = "crosstalk_spacing.py"
 config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
@@ -37,10 +37,14 @@ configs.load(config_file, recursive=True)
 def task_launcher(args):
     lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, interv_s, interv_h, redist, input_gate, output_gate, out_noise_std, ckpt, id, gpu_id = args
     pres = [f"export CUDA_VISIBLE_DEVICES={gpu_id};", "python3", script, config_file]
+    log_path = os.path.join(root, f"{density}_{row_col}_[{','.join([str(i) for i in conv_block])}]/{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_id-{id}")
+    ensure_dir(os.path.join(
+            root,
+            f"{density}_{row_col}_[{','.join([str(i) for i in conv_block])}]"))
     with open(
         os.path.join(
             root,
-            f"{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_dm-{death_mode}_gm-{growth_mode}_im-{init_mode}_cb-{conv_block}_{row_col}-without-opt_den-{density}_ls-{interv_s}_lh-{interv_h}_rd-{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_run-{id}.log",
+            f"{density}_{row_col}_[{','.join([str(i) for i in conv_block])}]/{model}_{dataset}_lr-{lr:.3f}_wb-{w_bit}_ib-{in_bit}_dm-{death_mode}_gm-{growth_mode}_im-{init_mode}_cb-{conv_block}_{row_col}-without-opt_den-{density}_ls-{interv_s}_lh-{interv_h}_rd-{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_run-{id}.log",
         ),
         "w",
     ) as wfid:
@@ -60,7 +64,7 @@ def task_launcher(args):
             f"--noise.noise_flag={crosstalk}",
             f"--noise.crosstalk_flag={crosstalk}",
             f"--noise.output_noise_std={out_noise_std}",
-            f"--loginfo=rd-{int(redist)}_ig-{int(input_gate)}_og-{int(output_gate)}_id-{id}",
+            f"--loginfo={log_path}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.conv_cfg.in_bit={in_bit}",
@@ -85,27 +89,43 @@ if __name__ == "__main__":
     # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt
     # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt
     tasks = [
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt", 6, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.10_epoch-30.pt", 6, 0),
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt", 6, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt", 6, 0),
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-10_lh-120_run-4_acc-91.97_epoch-40.pt", 6, 0),
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-10_lh-120_run-4_acc-91.97_epoch-40.pt", 6, 0),  
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 16, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 18, 92.00, 26, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 20, 91.90, 43, 2, 0),
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 20, 91.90, 43, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 20, 91.90, 43, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 20, 91.90, 43, 2, 0), 
+        
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.77_epoch-46.pt", 6, 0),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.77_epoch-46.pt", 6, 0),
+        # 【1， 1， 16， 16】
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.88_epoch-47.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.77_epoch-43.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-92.27_epoch-43.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.95_epoch-44.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-92.20_epoch-44.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.95_epoch-42.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.75_epoch-45.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.58_epoch-42.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.37_epoch-47.pt", 6, 0),
 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], 0, 7, 14, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], 0, 7, 14, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], 0, 7, 14, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], 0, 7, 14, 2, 0), 
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], 0, 7, 14, 2, 0), 
+        # 【2， 2， 16， 16】
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.92_epoch-45.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.88_epoch-44.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.45_epoch-42.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.53_epoch-50.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.87_epoch-50.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.58_epoch-50.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.43_epoch-50.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.88_epoch-50.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.8_ls-9_lh-120_run-4_acc-92.00_epoch-50.pt", 6, 0),
 
+        # # 【4， 4， 16， 16】
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.85_epoch-42.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.87_epoch-45.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.87_epoch-50.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.45_epoch-50.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.72_epoch-50.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.53_epoch-50.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.85_epoch-50.pt", 6, 0),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.93_epoch-50.pt", 6, 0),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.8_ls-9_lh-120_run-4_acc-92.00_epoch-50.pt", 6, 0),
 
     ]
-    with Pool(4) as p:
+    with Pool(9) as p:
         p.map(task_launcher, tasks)
     logger.info(f"Exp: {configs.run.experiment} Done.")

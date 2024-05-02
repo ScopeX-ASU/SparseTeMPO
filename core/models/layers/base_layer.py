@@ -312,7 +312,7 @@ class ONNBaseLayer(nn.Module):
                 else:
                     factor = torch.ones([p,q,1,c], device=self.device) # [p,q,1,c]
 
-                print(factor.mean())
+                # print(factor.mean())
                 if self._enable_output_power_gating:
                     row_mask = self.prune_mask["row_mask"]  # [p,q,r,1,k1,1]
                     row_mask = row_mask[..., 0, :, :].flatten(2, 3)  # [p,q,r*k1, 1]
@@ -323,14 +323,14 @@ class ONNBaseLayer(nn.Module):
                 factor = factor.permute(0, 2, 1, 3).flatten(0, 1)[
                     : x.shape[1]
                 ]  # [p*r*k1, q, c] -> [out_c, q, c]
-                print(row_mask.sum()/row_mask.numel())
-                print(factor.sum()/factor.numel())
+                # print(row_mask.sum()/row_mask.numel())
+                # print(factor.sum()/factor.numel())
 
                 std = factor.mul(k2**0.5).square().sum([-2, -1]).sqrt()
 
                 std *= self.output_noise_std # [out_c]
-                print("no light dist no out gating: std: ", np.sqrt(np.prod(self.weight.shape[1::2])) * self.output_noise_std)
-                print("w/ light dist w/ out gating: std: ", std.mean().item(), std.min().item(), std.max().item())
+                # print("no light dist no out gating: std: ", np.sqrt(np.prod(self.weight.shape[1::2])) * self.output_noise_std)
+                # print("w/ light dist w/ out gating: std: ", std.mean().item(), std.min().item(), std.max().item())
 
                 noise = torch.randn_like(x)  # [bs, out_c, h, w] or [bs, out_c, q, c]
 

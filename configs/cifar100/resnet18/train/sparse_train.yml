@@ -30,9 +30,23 @@ quantize:
   input_bit: 8
 
 noise:
+  phase_bias: 0
   phase_noise_std: 0
-  crosstalk_factor: 0.05
+  output_noise_std: 0
+  gamma_noise_std: 0
+  crosstalk_factor: 0
   random_state: 42
+  weight_noise_std: 0.0
+  crosstalk_flag: False
+  noise_flag: False
+  light_redist: False
+  input_power_gating: False
+  input_modulation_ER: 6
+  output_power_gating: False
+  crosstalk_scheduler:
+    interv_h: 20
+    interv_v: 120
+    interv_s: 9
 
 checkpoint:
   save_best_model_k: 3
@@ -43,20 +57,42 @@ checkpoint:
 
 model:
   name: "TeMPO_ResNet18"
-
+  conv_cfg:
+    type: TeMPOBlockConv2d
+    mode: "weight"
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  # conv_cfg:
+  #   type: Conv2d
+  linear_cfg:
+    type: TeMPOBlockLinear
+    mode: "weight"
+    miniblock: [1, 1, 16, 16]
+    w_bit: 8
+    in_bit: 6
+  # linear_cfg:
+  #   type: Linear
+  norm_cfg:
+    type: BN2d
+    affine: True
+  act_cfg:
+    type: ReLU6
+    inplace: True
+    
 debug:
   verboise: 1
 
-dst_scheduler:
-  death_rate: 0.5
-  growth_death_ratio: 1.0
-  death_rate_decay: cosine
-  death_mode: magnitude
-  growth_mode: gradient
-  redistribution_mode: null
-  spe_initial: null
-  pruning_type: unstructure
-  update_frequency: 1400
-  T_max: 0.8
-  density: 0.8
-  init_mode: uniform
+# dst_scheduler:
+#   death_rate: 0.5
+#   growth_death_ratio: 1.0
+#   death_rate_decay: cosine
+#   death_mode: magnitude
+#   growth_mode: gradient
+#   redistribution_mode: null
+#   spe_initial: null
+#   pruning_type: unstructure
+#   update_frequency: 1400
+#   T_max: 0.8
+#   density: 0.8
+#   init_mode: uniform

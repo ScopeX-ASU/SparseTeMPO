@@ -105,6 +105,7 @@ dst_scheduler:
   T_max: 0.8
   density: 0.6
   max_combinations: 100
+  keep_same: False
   init_mode: uniform
   power_choice_margin: 2
   splitter_biases: 90

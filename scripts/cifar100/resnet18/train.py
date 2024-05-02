@@ -16,8 +16,8 @@ from pyutils.config import configs
 dataset = "cifar100"
 model = "resnet18"
 root = f"log/{dataset}/{model}/DensePTC"
-script = "sparse_train.py"
-config_file = f"configs/{dataset}/{model}/train/train.yml"
+script = "train.py"
+config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
 
 
@@ -51,7 +51,8 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 8, 6, [1, 1, 16, 16], 2, 3),
+        (0.002, 8, 6, [4, 4, 16, 16], 3, 0),
+        (0.002, 8, 6, [1, 1, 16, 16], 3, 3),
     ]
     with Pool(1) as p:
         p.map(task_launcher, tasks)
