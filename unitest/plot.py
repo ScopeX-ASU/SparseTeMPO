@@ -401,8 +401,8 @@ def plot_light_redist():
             layer.reset_parameters()
             x = torch.randn(1, 64, 32, 32, device=device)*10
 
-            mask["col_mask"].bernoulli_(sparsity**0.5)
-            mask["row_mask"].bernoulli_(sparsity**0.5)
+            mask["col_mask"].bernoulli_(sparsity)
+            # mask["row_mask"].bernoulli_(sparsity**0.5)
             layer.weight.data *= mask.data
 
             layer.set_noise_flag(False)
@@ -410,14 +410,16 @@ def plot_light_redist():
 
             layer.set_noise_flag(True)
             layer.set_light_redist(False)
-            set_torch_deterministic(0)
+            layer.set_input_power_gating(False)
+            set_torch_deterministic(random_seed)
             y1 = layer(x)
             nmae = torch.norm(y1 - y, p=1) / torch.norm(y, p=1)
             nmae_nodist_tmp.append(nmae.item())
             print(f"no redistribuion sparsity {sparsity:.3f} N-MAE: {nmae}")
 
             layer.set_light_redist(True)
-            set_torch_deterministic(0)
+            layer.set_input_power_gating(True)
+            set_torch_deterministic(random_seed)
             y2 = layer(x)
             nmae = torch.norm(y2 - y, p=1) / torch.norm(y, p=1)
             nmae_dist_tmp.append(nmae.item())
@@ -448,10 +450,10 @@ def plot_light_redist():
         xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
         xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
         yrange=[0.05, 0.151, 0.05],
-        ylimit=[0.05, 0.16],
+        ylimit=[0.045, 0.16],
         xformat="%.1f",
         yformat="%.2f",
-        figscale=[0.65, 0.45 * 9.1 / 8],
+        figscale=[0.65, 0.55 * 9.1 / 8],
         fontsize=10,
         linewidth=1,
         gridwidth=0.5,
@@ -477,10 +479,10 @@ def plot_light_redist():
         xrange=[sparsity_range[0], sparsity_range[-1] + 0.01, 0.2],
         xlimit=[sparsity_range[0]-0.01, sparsity_range[-1]+0.01],
         yrange=[0.05, 0.151, 0.05],
-        ylimit=[0.05, 0.16],
+        ylimit=[0.045, 0.16],
         xformat="%.1f",
         yformat="%.2f",
-        figscale=[0.65, 0.45 * 9.1 / 8],
+        figscale=[0.65, 0.55 * 9.1 / 8],
         fontsize=10,
         linewidth=1,
         gridwidth=0.5,
@@ -500,7 +502,7 @@ if __name__ == "__main__":
     # for sp_mode in ["uniform", "topk", "IS"]:
     #     for sa_mode in ["first_grad", "second_grad"]:
     #         plot_sparsity(sp_mode=sp_mode, sa_mode=sa_mode)
-    plot_crosstalk()
+    # plot_crosstalk()
     # plot_spacing()
-    print(create_interleaved_binary_mask(5, 5))
-    # plot_light_redist()
+    # print(create_interleaved_binary_mask(5, 5))
+    plot_light_redist()
