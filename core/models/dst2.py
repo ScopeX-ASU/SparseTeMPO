@@ -243,7 +243,7 @@ class DSTScheduler2(nn.Module):
         ADC_power: float = 7.4,
         TIA_power: float = 3,
         HDAC_power: float = 5.74,
-        skip_first_layer=True,
+        skip_first_layer=False,
         skip_last_layer = True,
         update_frequency: int = 100,
         keep_same: bool = False,
@@ -330,6 +330,8 @@ class DSTScheduler2(nn.Module):
         self.TIA_power = TIA_power
         self.HDAC_power = HDAC_power
         self.keep_same = keep_same
+        self.first_conv_idx = None
+        self.first_conv_name = None
 
         # stats
         self.name2zeros = {}
@@ -354,15 +356,15 @@ class DSTScheduler2(nn.Module):
     ):
         pruning_type = pruning_type or self.pruning_type
 
-        first_conv_idx = None
+        # first_conv_idx = None
         last_linear_idx = None
         print(module)
-        if self.skip_first_layer:
-            for idx, (name, m) in enumerate(module.named_modules()):
-                if isinstance(m, module._conv) and first_conv_idx is None:
-                    first_conv_idx = idx
-                    print("First Layer Conv Idx:", first_conv_idx)
-                    break
+        # if self.skip_first_layer:
+        for idx, (name, m) in enumerate(module.named_modules()):
+            if isinstance(m, module._conv) and self.first_conv_idx is None:
+                self.first_conv_idx = idx
+                print("First Layer Conv Idx:", self.first_conv_idx)
+                break
         
         if self.skip_last_layer:
             for idx, (name, m) in enumerate(module.named_modules()):
@@ -375,8 +377,7 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv) and idx != first_conv_idx) or \
-                (isinstance(m, module._linear) and idx != last_linear_idx):
+                if (isinstance(m, module._conv_linear) and idx != last_linear_idx):
                     name_cur = name + "_" + str(index)
                     index += 1
                     self.names.append(name_cur)
@@ -397,10 +398,11 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv) and idx != first_conv_idx) or \
-                (isinstance(m, module._linear) and idx != last_linear_idx):
+                if (isinstance(m, module._conv_linear) and idx != last_linear_idx):
                     print(idx)
                     name_cur = name + "_" + str(index)
+                    if idx == self.first_conv_idx:
+                        self.first_conv_name = name_cur
                     index += 1
                     self.names.append(name_cur)
                     self.params[name_cur] = m.weight  # [p, q, r, c, k1, k2]
@@ -1010,7 +1012,7 @@ class DSTScheduler2(nn.Module):
 
     def _structure_init_random(self, density: float = 0.05) -> None:
         if self.pruning_type == "structure_row":
-            for mask in self.masks.values():
+            for name, mask in self.masks.items():
                 # mask["row_mask"].bernoulli_(p=density)
                 # mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
                 mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
@@ -1057,86 +1059,112 @@ class DSTScheduler2(nn.Module):
                 mask["row_mask"][..., :, 0] = patterns[0]
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
-                ## assume all blocks have the same initial sparsity mask with min power
-                ## just select k2' from k2 with min power
-                col_num = k2 = self.params[name].shape[-1]
-                empty_col_num = int(round(col_num * (1 - density)))
-                patterns = self.find_sparsity_patterns(
-                    col_num, empty_col_num
-                )  # [#combinations, col_num]
-                if DEBUG:
-                    print(f"select {empty_col_num} from {col_num}")
-                    print("patterns", patterns.shape, patterns)
-                for opt in opts:
-                    if opt == "power":
-                        patterns, _ = self.find_least_switch_power_patterns(patterns)
-                        if DEBUG:
-                            print(f"after power opt", patterns.shape, patterns)
-                    elif opt == "crosstalk":
-                        patterns, _ = self.find_least_crosstalk_patterns(
-                            patterns, is_col=True
-                        )
-                    else:
-                        raise NotImplementedError
-                mask["col_mask"][..., :] = patterns[0]
-        elif self.pruning_type == "structure_row_col":
-            for name, mask in self.masks.items():
-                row_num, col_num = k1, k2 = self.params[name].shape[-2:]
-                max_empty_col_num = int(round(col_num * (1 - density)))
-
-                best_score = float("-inf")  # higher the better score
-                best_row_patterns = best_col_patterns = None
-
-                # find the integer solution (col, row) of `(k2-col) * (k1-row) = k1 * k2 * density`
-                for empty_col_num in range(max_empty_col_num + 1):
-                    empty_row_num = int(
-                        round(k1 - (k1 * k2 * density) / (k2 - empty_col_num))
-                    )
-
-                    col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
-                    row_patterns = self.find_sparsity_patterns(row_num, empty_row_num)
+                if name == self.first_conv_name:
+                    row_num = k1 = self.params[name].shape[-2]
+                    empty_row_num = int(round(row_num * (1 - density)))
+                    patterns = self.find_sparsity_patterns(
+                        row_num, empty_row_num
+                    )  # [#combinations, col_num]
+                    for opt in opts:
+                        if opt == "crosstalk":
+                            patterns, _ = self.find_least_crosstalk_patterns(
+                                patterns, is_col=False
+                            )
+                    mask["row_mask"][..., :, 0] = patterns[0]
+                else:
+                    ## assume all blocks have the same initial sparsity mask with min power
+                    ## just select k2' from k2 with min power
+                    col_num = k2 = self.params[name].shape[-1]
+                    empty_col_num = int(round(col_num * (1 - density)))
+                    patterns = self.find_sparsity_patterns(
+                        col_num, empty_col_num
+                    )  # [#combinations, col_num]
                     if DEBUG:
-                        print("col_pattern:", col_patterns)
-                        print("row_pattern:", row_patterns)
-                    score = {}
+                        print(f"select {empty_col_num} from {col_num}")
+                        print("patterns", patterns.shape, patterns)
                     for opt in opts:
                         if opt == "power":
-                            col_patterns, switch_power = (
-                                self.find_least_switch_power_patterns(col_patterns)
-                            )
-                            TIA_ADC_power = self.calc_TIA_ADC_power(
-                                row_num, empty_row_num, self.TIA_power, self.ADC_power
-                            )
-                            HDAC_power = self.calc_HDAC_power(
-                                col_num, empty_col_num, self.HDAC_power
-                            )
-                            score["power"] = -(
-                                switch_power + TIA_ADC_power + HDAC_power
-                            )
+                            patterns, _ = self.find_least_switch_power_patterns(patterns)
+                            if DEBUG:
+                                print(f"after power opt", patterns.shape, patterns)
                         elif opt == "crosstalk":
-                            col_patterns, col_crosstalk = (
-                                self.find_least_crosstalk_patterns(
-                                    col_patterns, is_col=True
-                                )
+                            patterns, _ = self.find_least_crosstalk_patterns(
+                                patterns, is_col=True
                             )
-                            row_patterns, row_crosstalk = (
-                                self.find_least_crosstalk_patterns(
-                                    row_patterns, is_col=False
-                                )
-                            )
-
-                            score["crosstalk"] = col_crosstalk + row_crosstalk
                         else:
                             raise NotImplementedError
+                    mask["col_mask"][..., :] = patterns[0]
+        elif self.pruning_type == "structure_row_col":
+            for name, mask in self.masks.items():
+                if name == self.first_conv_name:
+                    row_num = k1 = self.params[name].shape[-2]
+                    empty_row_num = int(round(row_num * (1 - density)))
+                    patterns = self.find_sparsity_patterns(
+                        row_num, empty_row_num
+                    )  # [#combinations, col_num]
+                    for opt in opts:
+                        if opt == "crosstalk":
+                            patterns, _ = self.find_least_crosstalk_patterns(
+                                patterns, is_col=False
+                            )
+                    mask["row_mask"][..., :, 0] = patterns[0]
+                else:
+                    row_num, col_num = k1, k2 = self.params[name].shape[-2:]
+                    max_empty_col_num = int(round(col_num * (1 - density)))
 
-                    # prioritize the first opt
-                    if score[opts[0]] > best_score:
-                        best_score = score[opts[0]]
-                        best_row_patterns = row_patterns
-                        best_col_patterns = col_patterns
+                    best_score = float("-inf")  # higher the better score
+                    best_row_patterns = best_col_patterns = None
 
-                self.masks[name]["col_mask"][..., :] = best_col_patterns[0]
-                self.masks[name]["row_mask"][..., :, 0] = best_row_patterns[0]
+                    # find the integer solution (col, row) of `(k2-col) * (k1-row) = k1 * k2 * density`
+                    for empty_col_num in range(max_empty_col_num + 1):
+                        empty_row_num = int(
+                            round(k1 - (k1 * k2 * density) / (k2 - empty_col_num))
+                        )
+
+                        col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
+                        row_patterns = self.find_sparsity_patterns(row_num, empty_row_num)
+                        if DEBUG:
+                            print("col_pattern:", col_patterns)
+                            print("row_pattern:", row_patterns)
+                        score = {}
+                        for opt in opts:
+                            if opt == "power":
+                                col_patterns, switch_power = (
+                                    self.find_least_switch_power_patterns(col_patterns)
+                                )
+                                TIA_ADC_power = self.calc_TIA_ADC_power(
+                                    row_num, empty_row_num, self.TIA_power, self.ADC_power
+                                )
+                                HDAC_power = self.calc_HDAC_power(
+                                    col_num, empty_col_num, self.HDAC_power
+                                )
+                                score["power"] = -(
+                                    switch_power + TIA_ADC_power + HDAC_power
+                                )
+                            elif opt == "crosstalk":
+                                col_patterns, col_crosstalk = (
+                                    self.find_least_crosstalk_patterns(
+                                        col_patterns, is_col=True
+                                    )
+                                )
+                                row_patterns, row_crosstalk = (
+                                    self.find_least_crosstalk_patterns(
+                                        row_patterns, is_col=False
+                                    )
+                                )
+
+                                score["crosstalk"] = col_crosstalk + row_crosstalk
+                            else:
+                                raise NotImplementedError
+
+                        # prioritize the first opt
+                        if score[opts[0]] > best_score:
+                            best_score = score[opts[0]]
+                            best_row_patterns = row_patterns
+                            best_col_patterns = col_patterns
+
+                    self.masks[name]["col_mask"][..., :] = best_col_patterns[0]
+                    self.masks[name]["row_mask"][..., :, 0] = best_row_patterns[0]
         else:
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
 
@@ -1253,7 +1281,9 @@ class DSTScheduler2(nn.Module):
             if self.death_mode == "magnitude" and pruning_type == "unstructure":
                 new_mask = self.magnitude_death(mask, weight, name)
             elif self.death_mode.startswith("magnitude"):
-                if pruning_type == "structure_row":
+                if name == self.first_conv_name:
+                    new_mask = self.row_only_magnitude_death(mask, weight, name)
+                elif pruning_type == "structure_row":
                     new_mask = self.row_only_magnitude_death(mask, weight, name)
                 elif pruning_type == "structure_col":
                     new_mask = self.col_only_magnitude_death(mask, weight, name)
@@ -1285,7 +1315,11 @@ class DSTScheduler2(nn.Module):
                     name, mask, self.pruned_number[name], weight
                 )
             elif self.growth_mode.startswith("gradient"):
-                if self.pruning_type == "structure_row":
+                if name == self.first_conv_name:
+                    new_mask = self.row_only_gradient_growth(
+                        name, mask, self.pruned_number[name], weight
+                    )
+                elif self.pruning_type == "structure_row":
                     new_mask = self.row_only_gradient_growth(
                         name, mask, self.pruned_number[name], weight
                     )
