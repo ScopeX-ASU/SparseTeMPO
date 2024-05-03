@@ -359,7 +359,7 @@ class DSTScheduler2(nn.Module):
         # first_conv_idx = None
         last_linear_idx = None
         print(module)
-        # if self.skip_first_layer:
+        
         for idx, (name, m) in enumerate(module.named_modules()):
             if isinstance(m, module._conv) and self.first_conv_idx is None:
                 self.first_conv_idx = idx
@@ -377,7 +377,9 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and idx != last_linear_idx):
+                if (isinstance(m, module._conv_linear) and (idx != last_linear_idx)):
+                    if self.skip_first_layer and idx == self.first_conv_idx:
+                        continue
                     name_cur = name + "_" + str(index)
                     index += 1
                     self.names.append(name_cur)
@@ -398,7 +400,9 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and idx != last_linear_idx):
+                if (isinstance(m, module._conv_linear) and (idx != last_linear_idx)):
+                    if self.skip_first_layer and idx == self.first_conv_idx:
+                        continue
                     print(idx)
                     name_cur = name + "_" + str(index)
                     if idx == self.first_conv_idx:
