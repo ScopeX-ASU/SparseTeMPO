@@ -226,7 +226,7 @@ class TeMPO_Base(nn.Module):
                 layer, "set_input_power_gating"
             ):
                 layer.set_input_power_gating(flag, ER)
-    
+
     def set_output_power_gating(self, flag: bool = True) -> None:
         for layer in self.modules():
             if isinstance(layer, self._conv_linear) and hasattr(
@@ -244,11 +244,26 @@ class TeMPO_Base(nn.Module):
             ):
                 layer.set_gamma_noise(noise_std, random_state=random_state)
 
-    def set_crosstalk_noise(self, flag: bool = True) -> None:
-        for layer in self.modules():
-            if isinstance(layer, self._conv_linear) and hasattr(
-                layer, "set_crosstalk_noise"
-            ):
+    def set_crosstalk_noise(
+        self,
+        flag: bool = True,
+        first_conv_layer: bool = True, # add crosstalk to first conv
+        last_linear_layer: bool = False, ## distable crosstalk for last linear
+    ) -> None:
+        modules = [m for m in self.modules() if isinstance(m, self._conv_linear)]
+        if not first_conv_layer:
+            for i, layer in enumerate(modules):
+                if isinstance(layer, self._conv):
+                    break
+            modules.pop(i)
+        if not last_linear_layer:
+            for i, layer in enumerate(modules[::-1]):
+                if isinstance(layer, self._linear):
+                    break
+            modules.pop(len(modules) - 1 - i)
+
+        for layer in modules:
+            if hasattr(layer, "set_crosstalk_noise"):
                 layer.set_crosstalk_noise(flag)
 
     def set_weight_noise(self, noise_std: float = 0.0) -> None:
@@ -406,7 +421,7 @@ class TeMPO_Base(nn.Module):
                 handles.append(handle)
         with torch.no_grad():
             self.forward(x)
-        cycles = {} # name: (cycles_per_block, total_cycles)
+        cycles = {}  # name: (cycles_per_block, total_cycles)
         for name, layer in self.named_modules():
             if isinstance(layer, self._conv_linear):
                 cycles[name] = layer.cycles(layer._input_shape, R=R, C=C)
@@ -759,7 +774,7 @@ class TeMPO_Base(nn.Module):
         input_size=[1, 3, 32, 32],
         R: int = 8,
         C: int = 8,
-        freq: float=1.0, # GHz
+        freq: float = 1.0,  # GHz
     ) -> None:
         ## return total energy in mJ and power mW breakdown
 
@@ -782,16 +797,16 @@ class TeMPO_Base(nn.Module):
                     power = power.sum().item()
                     power_dict[name] = power
                     cycles_per_block = cycle_dict[name][0]
-                    energy_dict[name] = power * cycles_per_block / freq / 1e9 # mJ
+                    energy_dict[name] = power * cycles_per_block / freq / 1e9  # mJ
         total_energy = np.sum(list(energy_dict.values()))
         avg_power = total_energy / (total_cycles / freq / 1e9)
         return (
-            total_energy, #mJ
-            energy_dict, # layer-wise energy breakdown
-            total_cycles, # total cycles
-            cycle_dict, # layer-wise cycle breakdown
-            avg_power, # average power mW
-            power_dict, # layer-wise power breakdown
+            total_energy,  # mJ
+            energy_dict,  # layer-wise energy breakdown
+            total_cycles,  # total cycles
+            cycle_dict,  # layer-wise cycle breakdown
+            avg_power,  # average power mW
+            power_dict,  # layer-wise power breakdown
         )
 
     def train(self, mode=True):
