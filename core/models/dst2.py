@@ -1012,7 +1012,8 @@ class DSTScheduler2(nn.Module):
         if self.pruning_type == "structure_row":
             for mask in self.masks.values():
                 # mask["row_mask"].bernoulli_(p=density)
-                mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
+                # mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
+                mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
                 print(mask["row_mask"])
 
         elif self.pruning_type == "structure_col":
@@ -1818,7 +1819,7 @@ class DSTScheduler2(nn.Module):
                     len(best_row_masks),
                     type(best_row_masks[0]),
                 )
-            mask["row_mask"] = best_row_masks[0]
+            mask["row_mask"].copy_(best_row_masks[0])
             return mask
         elif self.group == "block":
             ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
@@ -2004,7 +2005,7 @@ class DSTScheduler2(nn.Module):
                     len(best_col_masks),
                     type(best_col_masks[0]),
                 )
-            mask["col_mask"] = best_col_masks[0]
+            mask["col_mask"].copy_(best_col_masks[0])
             return mask
         elif self.group == "block":
             ## we can maintain uniform sparsity in each [rk1, ck2] block, then the row combinations are limited to rk1.
