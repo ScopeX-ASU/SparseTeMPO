@@ -409,6 +409,7 @@ def make_dst_scheduler(
         args=cfg,
         spe_initial=cfg.spe_initial,
         train_loader=train_loader,
+        keep_same=cfg.keep_same,
         pruning_type=cfg.pruning_type,
         update_frequency=cfg.update_frequency,
         max_combinations=cfg.max_combinations,

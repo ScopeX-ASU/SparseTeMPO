@@ -378,12 +378,12 @@ def main() -> None:
                 configs.checkpoint.restore_checkpoint,
                 ignore_size_mismatch=int(configs.checkpoint.no_linear),
             )
-            for name, m in model.named_modules():
-                if isinstance(m, model._conv_linear):  # no last fc layer
-                    if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
-                        m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
-                        percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
-                        print(percent)
+            # for name, m in model.named_modules():
+            #     if isinstance(m, model._conv_linear):  # no last fc layer
+            #         if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
+            #             m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+            #             percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
+            #             print(percent)
             lg.info("Validate resumed model...")
             acc = test(
                 model,
@@ -435,7 +435,7 @@ def main() -> None:
         C = configs.arch.arch.num_pe_per_tile
 
         mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
-
+        
         for name, m in model.named_modules():
             if isinstance(m, model._conv):  # no last fc layer
                 if m.prune_mask is not None:

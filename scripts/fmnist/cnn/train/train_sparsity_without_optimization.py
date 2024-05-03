@@ -23,7 +23,7 @@ configs.load(config_file, recursive=True)
 keep_same = True
 
 def task_launcher(args):
-    lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, interv_s, interv_h, id, gpu_id  = args
+    lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, redist, input_gate, output_gate, interv_s, interv_h, id, gpu_id  = args
     pres = [
         f"export CUDA_VISIBLE_DEVICES={gpu_id};",
         "python3", script, config_file]
@@ -50,6 +50,9 @@ def task_launcher(args):
             f"--noise.crosstalk_flag={crosstalk}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
+            f"--noise.light_redist={redist}",
+            f"--noise.input_power_gating={input_gate}",
+            f"--noise.output_power_gating={output_gate}",
             f"--model.conv_cfg.in_bit={in_bit}",
             f"--model.linear_cfg.in_bit={in_bit}",
             f"--checkpoint.model_comment={row_col}-only-without-opt_lr-{lr:.4f}_wb-{w_bit}_ib-{in_bit}_dm-{death_mode}_gm-{growth_mode}_im-{init_mode}_cb-[{','.join([str(i) for i in conv_block])}]_density-{density}_ls-{interv_s}_lh-{interv_h}_run-{id}",
@@ -66,7 +69,7 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 9, 120, 4, 1),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 1, 1, 1, 9, 120, 4, 1),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
