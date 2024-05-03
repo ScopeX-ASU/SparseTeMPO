@@ -411,6 +411,7 @@ def make_dst_scheduler(
         train_loader=train_loader,
         keep_same=cfg.keep_same,
         pruning_type=cfg.pruning_type,
+        skip_first_layer=cfg.skip_first_layer,
         update_frequency=cfg.update_frequency,
         max_combinations=cfg.max_combinations,
         T_max=cfg.T_max * len(train_loader) * configs.run.n_epochs,

@@ -28,7 +28,7 @@ from pyutils.config import configs
 
 dataset = "fmnist"
 model = "cnn"
-root = f"log/{dataset}/{model}/test_structural_pruning_without_optimization_interleave"
+root = f"log/{dataset}/{model}/test_structural_pruning_without_optimization_2"
 script = "crosstalk_spacing.py"
 config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
@@ -65,6 +65,8 @@ def task_launcher(args):
             f"--noise.crosstalk_flag={crosstalk}",
             f"--noise.output_noise_std={out_noise_std}",
             f"--loginfo={log_path}",
+            f"--dst_scheduler.skip_first_layer={True}",
+            f"--dst_scheduler.skip_last_layer={True}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.conv_cfg.in_bit={in_bit}",
@@ -90,8 +92,8 @@ if __name__ == "__main__":
     # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt
     tasks = [
         
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
         # 【1， 1， 16， 16】
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.88_epoch-47.pt", 6, 0),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.77_epoch-43.pt", 6, 0),
@@ -99,9 +101,9 @@ if __name__ == "__main__":
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.95_epoch-44.pt", 6, 0),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-92.20_epoch-44.pt", 6, 0),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.95_epoch-42.pt", 6, 0),
-        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.75_epoch-45.pt", 6, 0),
-        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.58_epoch-42.pt", 6, 0),
-        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.37_epoch-47.pt", 6, 0),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.75_epoch-45.pt", 6, 0),
+        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.58_epoch-42.pt", 6, 0),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.37_epoch-47.pt", 6, 0),
 
         # 【2， 2， 16， 16】
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.92_epoch-45.pt", 6, 0),
@@ -114,7 +116,7 @@ if __name__ == "__main__":
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.88_epoch-50.pt", 6, 0),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[2,2,16,16]_density-0.8_ls-9_lh-120_run-4_acc-92.00_epoch-50.pt", 6, 0),
 
-        # # 【4， 4， 16， 16】
+        # # # 【4， 4， 16， 16】
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.85_epoch-42.pt", 6, 0),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.6_ls-9_lh-120_run-4_acc-91.87_epoch-45.pt", 6, 0),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.8_ls-9_lh-120_run-4_acc-91.87_epoch-50.pt", 6, 0),

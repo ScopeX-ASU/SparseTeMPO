@@ -635,8 +635,9 @@ class PhotonicCrossbar(PhotonicCore):
         layer_energy= {}
         layer_energy_breakdown = {}
         for name, m in model.named_modules():
-            if isinstance(m, model._conv):  # no last fc layer
+            if isinstance(m, model._conv_linear):  # no last fc layer
                 energy_breakdown = {}
+                p, q, r, c, k1, k2 = m.weight.shape
                 mask = m.prune_mask
                 # print(mask["row_mask"])
                 # print(mask["col_mask"])
@@ -651,12 +652,12 @@ class PhotonicCrossbar(PhotonicCore):
                     # print(RC_empty_rows, RC_empty_cols, total_empty_elemetns)
                 else:
                     switch_power = 0
-                    RC_empty_rows = RC_empty_cols = total_empty_elemetns = [torch.zeros(1)]*(R*C)
+                    RC_empty_rows = RC_empty_cols = total_empty_elemetns = [torch.zeros(1)]*(p*q*r*c)
 
                 # Get all energy besides weight MZI
                 input_power_dac_total = input_power_modulation_total = core_photo_detector_power_total = core_TIA_power_total = core_power_adc_total = 0
 
-                for i in range(R*C):
+                for i in range(p*q*r*c):
                     input_power_dac, input_power_modulation, core_photo_detector_power, core_TIA_power, core_power_adc = self.calc_core_power(RC_empty_rows[i].item(), RC_empty_cols[i].item(), total_empty_elemetns[i].item())
                     input_power_dac_total += input_power_dac
                     input_power_modulation_total += input_power_modulation

@@ -332,6 +332,7 @@ class DSTScheduler2(nn.Module):
         self.keep_same = keep_same
         self.first_conv_idx = None
         self.first_conv_name = None
+        self.last_linear_idx = None
 
         # stats
         self.name2zeros = {}
@@ -357,7 +358,7 @@ class DSTScheduler2(nn.Module):
         pruning_type = pruning_type or self.pruning_type
 
         # first_conv_idx = None
-        last_linear_idx = None
+        # last_linear_idx = None
         print(module)
         
         for idx, (name, m) in enumerate(module.named_modules()):
@@ -369,15 +370,15 @@ class DSTScheduler2(nn.Module):
         if self.skip_last_layer:
             for idx, (name, m) in enumerate(module.named_modules()):
                 if isinstance(m, module._linear):
-                    last_linear_idx = idx
-                    print("Last Layer Linear Idx:", last_linear_idx)
+                    self.last_linear_idx = idx
+                    print("Last Layer Linear Idx:", self.last_linear_idx)
 
         if pruning_type in {"unstructure"}:
             self.modules.append(module)
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and (idx != last_linear_idx)):
+                if (isinstance(m, module._conv_linear) and (idx != self.last_linear_idx)):
                     if self.skip_first_layer and idx == self.first_conv_idx:
                         continue
                     name_cur = name + "_" + str(index)
@@ -400,7 +401,7 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and (idx != last_linear_idx)):
+                if (isinstance(m, module._conv_linear) and (idx != self.last_linear_idx)):
                     if self.skip_first_layer and idx == self.first_conv_idx:
                         continue
                     print(idx)
@@ -1020,7 +1021,7 @@ class DSTScheduler2(nn.Module):
                 # mask["row_mask"].bernoulli_(p=density)
                 # mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
                 mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                print(mask["row_mask"])
+                # print(mask["row_mask"])
 
         elif self.pruning_type == "structure_col":
             for mask in self.masks.values():
@@ -1339,6 +1340,7 @@ class DSTScheduler2(nn.Module):
                     raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             self.masks[name] = new_mask
 
+
     def update_and_apply_mask(
         self, pruning_type: str | None = None, indicator_list=None, keep_same: bool = False
     ) -> None:
@@ -1347,6 +1349,22 @@ class DSTScheduler2(nn.Module):
         if not keep_same:
             self.update_death_mask(pruning_type)
             self.update_growth_mask(pruning_type)
+
+        # index = 0
+        # for idx, (name, m) in enumerate(self.modules[0].named_modules()):
+        #     if (isinstance(m, self.modules[0]._conv_linear) and idx != self.last_linear_idx):
+        #         if self.skip_first_layer and idx == self.first_conv_idx:
+        #             continue
+        #         name_cur = name + "_" + str(index)
+        #         index += 1
+        #         m.prune_mask = self.masks[name_cur]
+        #         m.row_prune_mask = self.masks[name_cur]["row_mask"]
+        #         m.col_prune_mask = self.masks[name_cur]["col_mask"]
+        for name, layer in self.layers.items():
+            layer.prune_mask = self.masks[name]
+            layer.row_prune_mask = self.masks[name]["row_mask"]
+            layer.col_prune_mask = self.masks[name]["col_mask"]
+
         self.apply_mask()
 
     # remove part mask
@@ -2246,11 +2264,11 @@ class DSTScheduler2(nn.Module):
         if death:
             col_turn_off_elements = mask["row_mask"].sum([2, 4]).flatten() # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
-            row_turn_off_average = mask["col_mask"].sum([3, 5]).float().mean().item()
+            # row_turn_off_average = mask["col_mask"].sum([3, 5]).float().mean().item()
         else:
             col_turn_off_elements = (~mask["row_mask"]).sum([2, 4]).flatten() # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
-            row_turn_off_average = (~mask["col_mask"]).sum([3, 5]).float().mean().item()
+            # row_turn_off_average = (~mask["col_mask"]).sum([3, 5]).float().mean().item()
 
         # if death:
         #     # Get full mask
@@ -2317,6 +2335,11 @@ class DSTScheduler2(nn.Module):
 
         row_total_required_elements = num_select - real_turned_off_by_col
         row_required_weight = weight.data * mask_temp
+        
+        if death:
+            row_turn_off_average = mask_temp["col_mask"].sum([3, 5]).float().mean().item()
+        else:
+            row_turn_off_average = (~mask_temp["col_mask"]).sum([3, 5]).float().mean().item()
 
         mask_temp = self.row_only_magnitude_select(
             mask_temp,

@@ -48,6 +48,8 @@ def task_launcher(args):
             f"--noise.crosstalk_scheduler.interv_h={interv_h}",
             f"--noise.noise_flag={crosstalk}",
             f"--noise.crosstalk_flag={crosstalk}",
+            f"--dst_scheduler.skip_first_layer={True}",
+            f"--dst_scheduler.skip_last_layer={True}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--noise.light_redist={redist}",
@@ -69,7 +71,15 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
