@@ -1024,12 +1024,22 @@ class DSTScheduler2(nn.Module):
                 # print(mask["row_mask"])
 
         elif self.pruning_type == "structure_col":
-            for mask in self.masks.values():
-                mask["col_mask"].bernoulli_(p=density)
+            for name, mask in self.masks.items():
+                if name == self.first_conv_name:
+                    mask["row_mask"].bernoulli_(p=density)
+                else:
+                    mask["col_mask"].bernoulli_(p=density)
+
         elif self.pruning_type == "structure_row_col":
-            for mask in self.masks.values():
-                mask["row_mask"].bernoulli_(p=density**0.5)
-                mask["col_mask"].bernoulli_(p=density**0.5)
+            for name, mask in self.masks.items():
+                if name == self.first_conv_name:
+                    mask["row_mask"].bernoulli_(p=density)
+                else:
+                    # print("ROW COL THUS here")
+                    mask["row_mask"].bernoulli_(p=density**0.5)
+                    # print("Doing row")
+                    mask["col_mask"].bernoulli_(p=density**0.5)
+                    # print("Doing col")
         else:
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
 

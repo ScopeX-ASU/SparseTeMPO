@@ -628,7 +628,7 @@ class PhotonicCrossbar(PhotonicCore):
             )
             print(f"--crossbar ADC area is {self.core_ADC_area} um^2")
 
-    def calc_total_energy(self, cycle_dict, dst_scheduler, model):
+    def calc_total_energy(self, cycle_dict, dst_scheduler, model, IG_flag, OG_flag):
         R = self.num_tiles
         C = self.num_pe_per_tile
         work_freq = self.work_freq
@@ -658,7 +658,7 @@ class PhotonicCrossbar(PhotonicCore):
                 input_power_dac_total = input_power_modulation_total = core_photo_detector_power_total = core_TIA_power_total = core_power_adc_total = 0
 
                 for i in range(p*q*r*c):
-                    input_power_dac, input_power_modulation, core_photo_detector_power, core_TIA_power, core_power_adc = self.calc_core_power(RC_empty_rows[i].item(), RC_empty_cols[i].item(), total_empty_elemetns[i].item())
+                    input_power_dac, input_power_modulation, core_photo_detector_power, core_TIA_power, core_power_adc = self.calc_core_power(RC_empty_rows[i].item(), RC_empty_cols[i].item(), total_empty_elemetns[i].item(), IG_flag, OG_flag)
                     input_power_dac_total += input_power_dac
                     input_power_modulation_total += input_power_modulation
                     core_photo_detector_power_total += core_photo_detector_power
@@ -694,14 +694,22 @@ class PhotonicCrossbar(PhotonicCore):
             empty_rows: int = 0,
             empty_cols: int = 0,
             total_empty_elements: int = 0,
+            IG_flag: bool = 0,
+            OG_flag: bool = 0,
             ):
         
         # self.input_power_laser = self.laser_power
-        self.input_power_dac = (self.core_width - empty_cols) * self.num_wavelength * self.core_DAC_power
-
-        self.input_power_modulation = (self.core_width - empty_cols) * self.num_wavelength \
+        if IG_flag:
+            self.input_power_dac = (self.core_width - empty_cols) * self.num_wavelength * self.core_DAC_power
+            self.input_power_modulation = (self.core_width - empty_cols) * self.num_wavelength \
                                       * (self.modulator_power_static + self.modulator_power_dynamic
                                          + self.mrr_router_power * (2 if self.num_wavelength > 1 else 0))
+        else:
+            self.input_power_dac = self.core_width* self.num_wavelength * self.core_DAC_power
+            self.input_power_modulation = self.core_width * self.num_wavelength \
+                                      * (self.modulator_power_static + self.modulator_power_dynamic
+                                         + self.mrr_router_power * (2 if self.num_wavelength > 1 else 0))
+
 
         # self.core_phase_shifter_power = (
         #         self.core_height
@@ -712,21 +720,34 @@ class PhotonicCrossbar(PhotonicCore):
         #         * self.phase_shifter_power_static
         # )
 
+        if OG_flag:
+            self.core_TIA_power = (
+                    (self.core_height - empty_rows)
+                    * self.TIA_power
+            )
+
+            self.core_power_adc = (
+                    (self.core_height - empty_rows)
+                    * self.core_ADC_power
+            )
+        else:
+            self.core_TIA_power = (
+                    (self.core_height)
+                    * self.TIA_power
+            )
+
+            self.core_power_adc = (
+                    (self.core_height)
+                    * self.core_ADC_power
+            )            
+
+
         self.core_photo_detector_power = (
                 ((self.core_height * self.core_width) - total_empty_elements)
                 * self.photo_detector_power
                 * 2
         )
 
-        self.core_TIA_power = (
-                (self.core_height - empty_rows)
-                * self.TIA_power
-        )
-
-        self.core_power_adc = (
-                (self.core_height - empty_rows)
-                * self.core_ADC_power
-        )
 
         # self.core_power_dac_weight = (
         #         self.core_height
@@ -765,10 +786,13 @@ class PhotonicCrossbar(PhotonicCore):
         self.architecture_modulation_power = input_power_modulation / self.sharing_factor_r
 
         self.architecture_dac_power = input_power_dac / self.sharing_factor_r
+             
+
 
         self.architecture_TIA_power =  core_TIA_power / self.sharing_factor_c
 
         self.architecture_adc_power = core_power_adc / self.sharing_factor_c
+
 
         # self.architecture_dac_weight_power = (self.num_tiles * self.num_pe_per_tile) \
         #                                      * self.core_power_dac_weight

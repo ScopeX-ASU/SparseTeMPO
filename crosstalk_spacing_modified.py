@@ -287,8 +287,16 @@ def main() -> None:
             int(configs.run.random_state) if int(configs.run.deterministic) else None
         ),
     )
+
+
     ## dummy forward to initialize quantizer
     model(next(iter(test_loader))[0].to(device))
+
+    load_model(
+                model,
+                configs.checkpoint.restore_checkpoint,
+                ignore_size_mismatch=int(configs.checkpoint.no_linear),
+            )
 
     optimizer = builder.make_optimizer(
         get_parameter_group(model, weight_decay=float(configs.optimizer.weight_decay)),
@@ -376,11 +384,11 @@ def main() -> None:
             int(configs.checkpoint.resume)
             and len(configs.checkpoint.restore_checkpoint) > 0
         ):
-            load_model(
-                model,
-                configs.checkpoint.restore_checkpoint,
-                ignore_size_mismatch=int(configs.checkpoint.no_linear),
-            )
+            # load_model(
+            #     model,
+            #     configs.checkpoint.restore_checkpoint,
+            #     ignore_size_mismatch=int(configs.checkpoint.no_linear),
+            # )
             # for name, m in model.named_modules():
             #     if isinstance(m, model._conv_linear):  # no last fc layer
             #         if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
@@ -440,11 +448,11 @@ def main() -> None:
 
         mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
         
-        # for name, m in model.named_modules():
-        #     if isinstance(m, model._conv):  # no last fc layer
-        #         if m.prune_mask is not None:
-        #             print(m.prune_mask["row_mask"].cpu().numpy())
-        #             print(m.prune_mask["col_mask"].cpu().numpy())
+        for name, m in model.named_modules():
+            if isinstance(m, model._conv):  # no last fc layer
+                if m.prune_mask is not None:
+                    print(m.prune_mask["row_mask"].cpu().numpy())
+                    print(m.prune_mask["col_mask"].cpu().numpy())
 
         total_cycles = 0
         for key, value in cycle_dict.items():

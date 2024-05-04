@@ -50,6 +50,7 @@ noise:
     interv_h: 20
     interv_v: 120
     interv_s: 9
+    ps_width: 6
 
 checkpoint:
   save_best_model_k: 3

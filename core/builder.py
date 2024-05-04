@@ -245,6 +245,7 @@ def make_model(
         interv_h=configs.noise.crosstalk_scheduler.interv_h,
         interv_v=configs.noise.crosstalk_scheduler.interv_v,
         interv_s=configs.noise.crosstalk_scheduler.interv_s,
+        ps_width=configs.noise.crosstalk_scheduler.ps_width,
     )
     model.set_noise_schedulers({"crosstalk_scheduler": crosstalk_scheduler})
     model.set_noise_flag(getattr(configs.noise, "noise_flag", False))

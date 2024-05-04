@@ -15,7 +15,7 @@ from pyutils.config import configs
 
 dataset = "fmnist"
 model = "cnn"
-root = f"log/{dataset}/{model}/train_sparsity_exploration_crosstalk_power_optimization/row_only_interleave_nochange"
+root = f"log/{dataset}/{model}/train_sparsity_exploration_without_optimization/interleave_nochange_row_only"
 script = "sparse_train.py"
 # file_id = "sparse_train_64_4_[4, 4, 8, 8]row"
 config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
@@ -48,7 +48,7 @@ def task_launcher(args):
             f"--noise.crosstalk_scheduler.interv_h={interv_h}",
             f"--noise.noise_flag={crosstalk}",
             f"--noise.crosstalk_flag={crosstalk}",
-            f"--dst_scheduler.skip_first_layer={True}",
+            f"--dst_scheduler.skip_first_layer={False}",
             f"--dst_scheduler.skip_last_layer={True}",
             f"--model.conv_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
             f"--model.linear_cfg.miniblock=[{','.join([str(i) for i in conv_block])}]",
@@ -71,16 +71,16 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
-        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
+        (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col",  0, 1, 1, 1, 9, 120, 4, 1),
+        # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row",  0, 9, 120, 4, 1),
         # (0.002, 0.8, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
         # (0.002, 0.6, 8, 6, "magnitude", "gradient", "uniform", [2, 2, 16, 16], "structure_row_col",  0, 9, 120, 4, 1),
