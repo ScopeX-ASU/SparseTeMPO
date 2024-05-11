@@ -50,6 +50,7 @@ noise:
     interv_h: 20
     interv_v: 120
     interv_s: 9
+    ps_width: 6
 
 checkpoint:
   save_best_model_k: 3
@@ -86,20 +87,20 @@ model:
 debug:
   verboise: 1
 
-# dst_scheduler:
-#   death_rate: 0.5
-#   growth_death_ratio: 1.0
-#   death_rate_decay: cosine
-#   death_mode: magnitude
-#   growth_mode: gradient
-#   redistribution_mode: null
-#   spe_initial: null
-#   pruning_type: structure_col
-#   update_frequency: 1400
-#   T_max: 0.8
-#   density: 0.6
-#   max_combinations: 100
-#   init_mode: uniform
-#   power_choice_margin: 2
-#   splitter_biases: 90
-#   node_spacing: [20, 100] # um, row, col spacing in weight matrix
+dst_scheduler:
+  death_rate: 0.5
+  growth_death_ratio: 1.0
+  death_rate_decay: cosine
+  death_mode: magnitude
+  growth_mode: gradient
+  redistribution_mode: null
+  spe_initial: null
+  pruning_type: structure_col
+  update_frequency: 1400
+  T_max: 0.8
+  density: 0.6
+  max_combinations: 100
+  init_mode: uniform
+  power_choice_margin: 2
+  splitter_biases: 90
+  node_spacing: [20, 100] # um, row, col spacing in weight matrix

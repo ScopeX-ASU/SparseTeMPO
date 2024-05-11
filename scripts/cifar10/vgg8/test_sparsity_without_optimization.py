@@ -26,13 +26,13 @@ import mlflow
 from pyutils.general import ensure_dir, logger
 from pyutils.config import configs
 
-dataset = "fmnist"
-model = "cnn"
-root = f"log/{dataset}/{model}/test_DensePTC/MainResults"
+dataset = "cifar10"
+model = "vgg8"
+root = f"log/{dataset}/{model}/test_sparsity_on_crosstalkeffect/0.4_r4c4_row_col_final"
 script = "crosstalk_spacing.py"
 config_file = f"configs/{dataset}/{model}/train/sparse_train.yml"
 configs.load(config_file, recursive=True)
-
+keep_same = False
 
 def task_launcher(args):
     lr, density, w_bit, in_bit, death_mode, growth_mode, init_mode, conv_block, row_col, crosstalk, interv_s, interv_h, redist, input_gate, output_gate, out_noise_std, ckpt, id, gpu_id = args
@@ -59,6 +59,7 @@ def task_launcher(args):
             f"--dst_scheduler.init_mode={init_mode}",
             f"--dst_scheduler.density={density}",
             f"--dst_scheduler.pruning_type={row_col}",
+            f"--dst_scheduler.keep_same={keep_same}",
             f"--noise.crosstalk_scheduler.interv_s={interv_s}",
             f"--noise.crosstalk_scheduler.interv_h={interv_h}",
             f"--noise.noise_flag={crosstalk}",
@@ -96,18 +97,29 @@ if __name__ == "__main__":
     # TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.6_ls-10_lh-120_run-4_acc-92.07_epoch-24.pt
     tasks = [
         # Dense
-        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 9, 20, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.48_epoch-44.pt", 6, 0),
+        # ./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.36_epoch-176.pt
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.36_epoch-176.pt", 1, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 1, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.36_epoch-176.pt", 2, 1),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 1, 9, 20, 1, 1, 1, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.36_epoch-176.pt", 3, 2),
+        
+        (0.002, 1, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 1, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 4, 1),
+        # (0.002, 1, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 4, 1),
+        
+        # (0.002, 0.4, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row_col", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.64_epoch-189.pt", 4, 1),
+        # (0.002, 0.4, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row_col", 1, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.64_epoch-189.pt", 5, 2),
+        # (0.002, 0.4, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row_col", 1, 9, 20, 1, 1, 1, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.64_epoch-189.pt", 6, 3),
+
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row_col", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.4_ls-9_lg-5_run-5_acc-85.36_epoch-176.pt", 6, 0),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 9, 20, 1, 1, 1, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.42_epoch-43.pt", 6, 0),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 1, 9, 20, 0, 0, 0, 0.00, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.42_epoch-43.pt", 6, 1),
-        # (0.002, 0.3, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-1_acc-91.60_epoch-45.pt", 4, 1),
-        # (0.002, 0.3, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 1, 9, 20, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-1_acc-91.60_epoch-45.pt", 5, 1),
-        # (0.002, 0.3, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 1, 9, 20, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-1_acc-91.60_epoch-45.pt", 6, 1),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 1, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 1, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 1),
+        # (0.002, 1, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 2),
+        # (0.002, 1, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 1, 1, 1, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 2),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 1, 1, 0, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 3),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 1, 1, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 0),
+        # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 1, 0, 1, 0.01, "./checkpoint/cifar10/vgg8/train/TeMPO_VGG8_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-0_acc-88.02_epoch-192.pt", 6, 1),
 
-        (0.002, 1, 8, 6, "magnitude", "gradient", "uniform", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_lr-0.0020_wb-8_ib-6_cb-[4,4,16,16]_run-1_acc-91.42_epoch-8.pt", 1, 0),
-
-        # (0.002, 0.3, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row", 0, 9, 20, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-7_acc-91.40_epoch-43.pt", 1, 0),
-        # (0.002, 0.3, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row", 1, 9, 20, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-7_acc-91.40_epoch-43.pt", 2, 0),
-        # (0.002, 0.3, 8, 6, "magnitude_power", "gradient_power", "uniform_power", [4, 4, 16, 16], "structure_row", 1, 9, 20, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row_col-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_power_gm-gradient_power_im-uniform_power_cb-[4,4,16,16]_density-0.3_ls-9_lg-5_run-7_acc-91.40_epoch-43.pt", 3, 0),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 0, 0, 0, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
         # (0.002, 0.4, 8, 6, "magnitude", "gradient", "uniform", [1, 1, 16, 16], "structure_row", 0, 7, 14, 1, 1, 1, 0.01, "./checkpoint/fmnist/cnn/train/TeMPO_CNN_structure_row-only-without-opt_lr-0.0020_wb-8_ib-6_dm-magnitude_gm-gradient_im-uniform_cb-[1,1,16,16]_density-0.4_ls-9_lh-120_run-4_acc-91.55_epoch-43.pt", 6, 0),
         # 【1， 1， 16， 16】

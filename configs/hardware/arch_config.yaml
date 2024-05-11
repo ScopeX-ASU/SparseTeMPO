@@ -121,6 +121,7 @@ arch:
   num_pe_per_tile: 4
   r: 1
   c: 1
+  oedac_partition: 2
   tunable_splitter: True
   structural_sparsity: False
   full_range_support_factor: 1 # pe support full range or not -> 2: one operand is positive only -> 4 all operands are positive only

@@ -73,6 +73,7 @@ class PhotonicCrossbar(PhotonicCore):
         self.w_bit = w_bit
         self.act_bit = act_bit
         self.switch_bit = switch_bit
+        self.oedac_partition = config.arch.oedac_partition
         # print(self.in_bit)
 
         # DAC and ADC params
@@ -477,21 +478,22 @@ class PhotonicCrossbar(PhotonicCore):
         assert (
                 self.in_bit <= self.DAC_prec
         ), f"Got input bit {self.in_bit} exceeds the DAC precision limit"
+        in_bit = self.in_bit / self.oedac_partition
         if self.DAC_FoM is not None:
             # following 2 * FoM * nb * Fs / Br (assuming Fs=Br)
-            self.core_DAC_power = 2 * self.DAC_FoM * self.in_bit * self.work_freq * 1e-3
+            self.core_DAC_power = 2 * self.DAC_FoM * in_bit * self.work_freq * 1e-3
         else:
             # P \propto 2**N/(N+1) * f_clk
             self.core_DAC_power = (
                     self.DAC_power
-                    * (2 ** self.in_bit / (self.in_bit + 1))
+                    * (2 ** in_bit / (in_bit + 1))
                     / (2 ** self.DAC_prec / (self.DAC_prec + 1))
                     * self.work_freq
                     / self.DAC_sample_rate
             )
-
         # TODO(hqzhu): add tech node scaling for area here
-        self.core_DAC_area = self.DAC_area
+        self.core_DAC_power *= self.oedac_partition
+        self.core_DAC_area = self.DAC_area * self.oedac_partition
         self.core_DAC_prec = self.in_bit
         self.core_DAC_sampling_rate = self.work_freq
         if print_msg:

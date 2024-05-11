@@ -51,8 +51,8 @@ if __name__ == "__main__":
     mlflow.set_experiment(configs.run.experiment)  # set experiments first
 
     tasks = [
-        (0.002, 8, 6, [4, 4, 16, 16], 3, 0),
-        (0.002, 8, 6, [1, 1, 16, 16], 3, 3),
+        (0.02, 8, 6, [4, 4, 16, 16], 1, 0),
+        # (0.002, 8, 6, [1, 1, 16, 16], 3, 3),
     ]
     with Pool(1) as p:
         p.map(task_launcher, tasks)

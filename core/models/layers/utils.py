@@ -55,14 +55,22 @@ __all__ = [
 DEBUG = False
 
 
+# def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
+#     ## coeff: from high to low order coefficient, last one is constant
+#     ## e.g., [p5, p4, p3, p2, p1, p0] -> p5*x^5 + p4*x^4 + p3*x^3 + p2*x^2 + p1*x + p0
+#     # print(x.shape)
+#     x = torch.stack([x.pow(i) for i in range(coeff.size(0) - 1, 0, -1)], dim=-1)
+#     out = x.matmul(coeff[:-1]).add_(coeff[-1])
+#     return out
 def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     ## coeff: from high to low order coefficient, last one is constant
     ## e.g., [p5, p4, p3, p2, p1, p0] -> p5*x^5 + p4*x^4 + p3*x^3 + p2*x^2 + p1*x + p0
     # print(x.shape)
-    x = torch.stack([x.pow(i) for i in range(coeff.size(0) - 1, 0, -1)], dim=-1)
-    out = x.matmul(coeff[:-1]).add_(coeff[-1])
+    out = 0
+    for i in range(coeff.size(0) - 1, 0, -1):
+        out = out + x.pow(i).mul_(coeff[coeff.size(0)-i-1])
+    out.add_(coeff[-1])
     return out
-
 
 def polynomial2(
     x: Tensor | float, y: Tensor | float, coeff: Tensor | List[float]

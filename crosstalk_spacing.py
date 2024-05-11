@@ -381,13 +381,15 @@ def main() -> None:
                 configs.checkpoint.restore_checkpoint,
                 ignore_size_mismatch=int(configs.checkpoint.no_linear),
             )
-            # for name, m in model.named_modules():
-            #     if isinstance(m, model._conv_linear):  # no last fc layer
-            #         if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
-            #             m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
-            #             percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
-            #             col_percent = m.col_prune_mask.sum() / m.col_prune_mask.numel()
-            #             print(percent, col_percent)
+            for name, m in model.named_modules():
+                if isinstance(m, model._conv_linear):  # no last fc layer
+                    # if hasattr(m, "prune_mask") and m.prune_mask is not None:
+                    #     print(m.prune_mask)
+                    if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
+                        m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+                        percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
+                        col_percent = m.col_prune_mask.sum() / m.col_prune_mask.numel()
+                        print(percent, col_percent)
             lg.info("Validate resumed model...")
             acc = test(
                 model,
@@ -422,8 +424,8 @@ def main() -> None:
             if teacher is not None:
                 teacher = torch.compile(teacher)
         
-        model.set_noise_flag(True)
-        model.set_crosstalk_noise(True)
+        model.set_noise_flag(configs.noise.noise_flag)
+        model.set_crosstalk_noise(configs.noise.crosstalk_flag)
         model.set_output_noise(configs.noise.output_noise_std)
         model.set_light_redist(configs.noise.light_redist)
         model.set_input_power_gating(configs.noise.input_power_gating, configs.noise.input_modulation_ER)
@@ -432,7 +434,7 @@ def main() -> None:
         interv_s_minax = [9, 10]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-        interv_h_s_minax = [5, 6]
+        interv_h_s_minax = [1, 5]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
         R = configs.arch.arch.num_tiles

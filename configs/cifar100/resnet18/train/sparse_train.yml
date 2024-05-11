@@ -1,6 +1,11 @@
 criterion:
   name: ce
 
+# optimizer:
+#   name: adam
+#   lr: 0.002
+#   weight_decay: 0.000
+
 optimizer:
   name: sgd
   lr: 0.02
@@ -10,7 +15,7 @@ optimizer:
 scheduler:
   name: cosine
   lr_gamma: 0.99
-  lr_min: 0.0
+  lr_min: 0.0000
 
 run:
   experiment: "cifar100_resnet18_train"
@@ -29,24 +34,23 @@ quantize:
   weight_bit: 8
   input_bit: 8
 
+loginfo: "logs.csv"
+
 noise:
   phase_bias: 0
   phase_noise_std: 0
-  output_noise_std: 0
   gamma_noise_std: 0
-  crosstalk_factor: 0
+  crosstalk_factor: 0.05
+  output_noise_std: 0
   random_state: 42
   weight_noise_std: 0.0
-  crosstalk_flag: False
-  noise_flag: False
-  light_redist: False
-  input_power_gating: False
-  input_modulation_ER: 6
-  output_power_gating: False
+  crosstalk_flag: 0
+  noise_flag: 0
   crosstalk_scheduler:
     interv_h: 20
     interv_v: 120
     interv_s: 9
+    ps_width: 6
 
 checkpoint:
   save_best_model_k: 3
@@ -79,20 +83,24 @@ model:
   act_cfg:
     type: ReLU6
     inplace: True
-    
+
 debug:
   verboise: 1
 
-# dst_scheduler:
-#   death_rate: 0.5
-#   growth_death_ratio: 1.0
-#   death_rate_decay: cosine
-#   death_mode: magnitude
-#   growth_mode: gradient
-#   redistribution_mode: null
-#   spe_initial: null
-#   pruning_type: unstructure
-#   update_frequency: 1400
-#   T_max: 0.8
-#   density: 0.8
-#   init_mode: uniform
+dst_scheduler:
+  death_rate: 0.5
+  growth_death_ratio: 1.0
+  death_rate_decay: cosine
+  death_mode: magnitude
+  growth_mode: gradient
+  redistribution_mode: null
+  spe_initial: null
+  pruning_type: structure_col
+  update_frequency: 1400
+  T_max: 0.8
+  density: 0.6
+  max_combinations: 100
+  init_mode: uniform
+  power_choice_margin: 2
+  splitter_biases: 90
+  node_spacing: [20, 100] # um, row, col spacing in weight matrix

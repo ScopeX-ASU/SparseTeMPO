@@ -485,15 +485,23 @@ class ONNBaseLayer(nn.Module):
 
                 ## reconstruct noisy weight
                 weight_noisy = mzi_phase_to_out_diff(phase).mul(S_scale[..., None])
+                # print("Add crosstalk, inside build weight")
+                # print_stat((weight_noisy - weight.data).abs())
+                # print((weight_noisy - weight.data).norm(1)/weight.data.norm(1))
+                # print("Ideal weight:", weight[0, 0])
+                # print("Noisy Weight:", weight_noisy[0, 0])
                 if self._enable_output_power_gating and self.prune_mask is not None:
-                    # print("no output gating")
+                    # print("Add cro")
                     # print_stat((weight_noisy - weight.data).abs())
                     weight_noisy = (
                         weight_noisy * self.prune_mask["row_mask"]
                     )  ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
+                    # weight_noisy = weight_tmp
                     # print("w/ output gating")
                     # print_stat((weight_noisy - weight.data).abs())
+                    # print("Noisy Weight after OG:",weight_noisy[0, 0])
                 if self._enable_input_power_gating and self.prune_mask is not None:
+                    # print("IG should not perform")
                     ratio = 1/10**(self._input_modulator_ER / 10)
                     # print("no input gating")
                     # print_stat((weight_noisy - weight.data).abs())

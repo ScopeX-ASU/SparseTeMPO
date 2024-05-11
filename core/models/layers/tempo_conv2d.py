@@ -269,6 +269,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         ) / self.stride[1] + 1
         return int(h_out), int(w_out)
 
+
     def forward(self, x: Tensor) -> Tensor:
         if self.in_bit < 16:
             x = self.input_quantizer(x)
@@ -279,6 +280,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             )  # [p, q, k, k]
         else:
             weight = self.weight
+
         weight = merge_chunks(weight)[
             : self.out_channels, : self.in_channels_flat
         ].view(-1, self.in_channels, self.kernel_size[0], self.kernel_size[1])
@@ -291,6 +293,56 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             dilation=self.dilation,
             groups=self.groups,
         )
+   
+        if self._noise_flag:
+            x = self._add_output_noise(x)
+        return x
+
+    def forward_bk(self, x: Tensor) -> Tensor:
+        if self.in_bit < 16:
+            x = self.input_quantizer(x)
+        if not self.fast_forward_flag or self.weight is None:
+            weight = self.build_weight(
+                enable_noise=self._noise_flag,
+                enable_ste=self._enable_ste,
+            )  # [p, q, k, k]
+        else:
+            weight = self.weight
+        weight_ideal = self.build_weight(
+                enable_noise=False,
+                enable_ste=self._enable_ste,
+            )
+        self.set_output_power_gating(False)
+        weight_noisy = self.build_weight(
+                enable_noise=True,
+                enable_ste=self._enable_ste,
+            )
+        self.set_output_power_gating(True)
+        weight_noisy_og = self.build_weight(
+                enable_noise=True,
+                enable_ste=self._enable_ste,
+            )
+        xs = []
+        for weight in [weight_ideal, weight_noisy, weight_noisy_og]:
+            weight = merge_chunks(weight)[
+                : self.out_channels, : self.in_channels_flat
+            ].view(-1, self.in_channels, self.kernel_size[0], self.kernel_size[1])
+            out = F.conv2d(
+                x,
+                weight,
+                bias=self.bias,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups,
+            )
+            xs.append(out)
+        # print("Compare NMAE for activation")
+        # print("Noisy weight",(weight_ideal-weight_noisy).norm(1) / weight_ideal.norm(1))
+        # print("Noisy activation",(xs[1]-xs[0]).norm(1) / xs[0].norm(1))
+        # print("Noisy OG weight", (weight_ideal-weight_noisy_og).norm(1) / weight_ideal.norm(1))
+        # print("Noisy OG activation", (xs[2]-xs[0]).norm(1) / xs[0].norm(1))
+        x = xs[1] * 0.5 + xs[0] * 0.5
         if self._noise_flag:
             x = self._add_output_noise(x)
         return x
