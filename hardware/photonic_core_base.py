@@ -5,7 +5,7 @@
 # @Last Modified time: 2023-02-24 01:48:16
 # photonic core base class
 
-__all__ = ["PhotoniceCore"]
+__all__ = ["PhotoniceCore"]  # noqa: F822
 
 class PhotonicCore():
     def __init__(self, *args, **kwargs):

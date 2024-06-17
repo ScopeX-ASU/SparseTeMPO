@@ -4,12 +4,9 @@
 # @Last Modified by:   Hanqing Zhu(hqzhu@utexas.edu)
 # @Last Modified time: 2023-10-22 22:56:41
 # basic simulator for photonic crossbar
-import numpy as np
 import math
 from .photonic_core_base import PhotonicCore
-import argparse
 import torch
-from pyutils.config import configs
 # from core.models.layers.utils import MZIPowerEvaluator
 
 #  area: um^2, prec: bit, power: mw, sample_rate: GSample/s
@@ -107,20 +104,11 @@ class PhotonicCrossbar(PhotonicCore):
         self.__obtain_crossing_param(getattr(config.device, "crossing", None))
         self.__obtain_waveguide_param(getattr(config.device, "waveguide", None))
         self.__obtain_micro_comb_param(config.device.micro_comb)
-        # self.__obtain_mmi_N_param(getattr(config.device, "mmi", None))
         self.__obtain_sharing_factors()
-        # self.mzi_power_evaluator = MZIPowerEvaluator(
-        #     csv_file="./unitest/MZIPower.csv",
-        #     interv_s=self.interval_s,
-        #     ps_width=self.phase_shifter_width,
-        #     device="cpu"
-        # )
-        # self.phase_shifter_power_static = self.mzi_power_evaluator.calc_MZI_power(delta_phi=0.5872, interv_s=self.interval_s)
 
         # set work freq
         self.work_freq = config.core.work_freq if config is not None else 1  # GHz
         self.laser_power_scale = config.core.laser_power_scale if config is not None else 1  # scaling down factor for laser power due to time accumulation.
-        # self.set_work_frequency(config.core.work_freq)
 
         # cal params
         # first obtain insertion loss
@@ -138,16 +126,6 @@ class PhotonicCrossbar(PhotonicCore):
         self.cal_core_power()
         self.cal_architecture_power()
         self.cal_node_area()
-
-        # self.__obtain_switch_param(config.device.switch)
-
-        # self.cal_core_area()
-        # self.cal_architecture_area()
-        # self.cal_sparsity_core_power()
-        # self.cal_sparsity_architecture_power()
-
-    # def set_ADC_sharing_factor(self, sharing_factor):
-    #     self.core_ADC_sharing_factor = sharing_factor
 
     def set_precison(self, in_bit, w_bit, act_bit):
         # set input, weight and activation bit-core_width to scale AD/DA energy consumption.
@@ -309,9 +287,9 @@ class PhotonicCrossbar(PhotonicCore):
     def __obtain_mmi_param(self, config=None):
         if config is not None:
             if self.core_height == 10:
-                self.mmi_length = config[f"1x10"].length
-                self.mmi_width = config[f"1x10"].width
-                self.mmi_insertion_loss = config[f"1x10"].insertion_loss
+                self.mmi_length = config["1x10"].length
+                self.mmi_width = config["1x10"].width
+                self.mmi_insertion_loss = config["1x10"].insertion_loss
             else:
                 factor = self.core_height / 10
                 print(f"This is factor:{factor}")
@@ -422,11 +400,6 @@ class PhotonicCrossbar(PhotonicCore):
         self.modulator_power_dynamic = (
                 self.modulator_energy_per_bit * self.work_freq * 1e-3
         )  # mW
-        # self.modulator_power_dynamic = self.modulator_energy_per_bit * \
-        #     self.w_bit * self.work_freq * 1e-3  # mW
-        # if print_msg:
-        #     print(f"modulator static power: {self.modulator_power_static: .2f} mW")
-        #     print(f"modulator dynamic power: {self.modulator_power_dynamic: .2f} mW")
 
     def __obtain_extinction_rate(self, config=None):
         if config is not None:
@@ -557,10 +530,6 @@ class PhotonicCrossbar(PhotonicCore):
             raise NotImplementedError
 
     def cal_DAC_switch_param(self, print_msg=False):
-        # convert power to desired freq and bit width
-        # assert (
-        #         self.w_bit <= self.DAC_weight_prec
-        # ), f"Got input bit {self.w_bit} exceeds the DAC precision limit"
         if self.DAC_switch_FoM is not None:
             # following 2 * FoM * nb * Fs / Br (assuming Fs=Br)
             self.core_DAC_switch_power = 2 * self.DAC_switch_FoM * 1 * self.work_freq * 1e-3
@@ -631,8 +600,6 @@ class PhotonicCrossbar(PhotonicCore):
             print(f"--crossbar ADC area is {self.core_ADC_area} um^2")
 
     def calc_total_energy(self, cycle_dict, dst_scheduler, model, IG_flag, OG_flag):
-        R = self.num_tiles
-        C = self.num_pe_per_tile
         work_freq = self.work_freq
         layer_energy= {}
         layer_energy_breakdown = {}
@@ -641,9 +608,6 @@ class PhotonicCrossbar(PhotonicCore):
                 energy_breakdown = {}
                 p, q, r, c, k1, k2 = m.weight.shape
                 mask = m.prune_mask
-                # print(mask["row_mask"])
-                # print(mask["col_mask"])
-                # exit(0)
                 # First get switch energy
                 if mask is not None:
                     switch_power = dst_scheduler.cal_ports_power(mask["col_mask"].flatten(0, -2)).sum().item()
@@ -668,8 +632,6 @@ class PhotonicCrossbar(PhotonicCore):
                     core_power_adc_total += core_power_adc
 
                 architecture_wise_power = (self.calc_architecture_power(energy_breakdown, input_power_dac_total, input_power_modulation_total, core_photo_detector_power_total, core_TIA_power_total, core_power_adc_total)) + switch_power
-                print(architecture_wise_power)
-                print(cycle_dict[name][0])
                 energy_breakdown["switch"] = switch_power
                 energy_breakdown = {key: (value * cycle_dict[name][0] / work_freq / 1e9) for key, value in energy_breakdown.items()}
                 # print(cycle_dict)
@@ -713,15 +675,6 @@ class PhotonicCrossbar(PhotonicCore):
                                          + self.mrr_router_power * (2 if self.num_wavelength > 1 else 0))
 
 
-        # self.core_phase_shifter_power = (
-        #         self.core_height
-        #         * self.core_width
-        #         # Need a power function of distance
-        #         # Guassion weight to phase, then average abs(phase), then apply function
-        #         # Average abs phase is 0.5872, corresponding to 2.21 when interval_s is 10 um
-        #         * self.phase_shifter_power_static
-        # )
-
         if OG_flag:
             self.core_TIA_power = (
                     (self.core_height - empty_rows)
@@ -751,53 +704,20 @@ class PhotonicCrossbar(PhotonicCore):
         )
 
 
-        # self.core_power_dac_weight = (
-        #         self.core_height
-        #         * self.core_width
-        #         * self.core_DAC_weight_power
-        # )
-
-        # self.single_switch_DAC_power = (self.core_width - 1) * self.DAC_switch_power
-        # print("This SI SINGLE SWITCH DAC power:", self.single_switch_DAC_power)
-
-        # if not self.structural_sparsity:
-        #     self.single_cascaded_splitter_power = 0
-        # else:
-        #     raise NotImplementedError
-
-
-        # core_power = 0
-        # core_power_common = 0
 
         return self.input_power_dac, self.input_power_modulation, self.core_photo_detector_power, self.core_TIA_power, self.core_power_adc
 
     def calc_architecture_power(self, layer_energy_breakdown, input_power_dac, input_power_modulation, core_photo_detector_power, core_TIA_power, core_power_adc):
 
-        # self.architecture_laser_power = (self.sharing_r * self.num_pe_per_tile) * self.input_power_laser
-
-        # self.architecture_phase_shifter_power = (self.num_tiles * self.num_pe_per_tile) \
-        #                                          * self.core_phase_shifter_power
-
         self.architecture_photo_detector_power = core_photo_detector_power
-
-        # self.architecture_cascaded_splitter_power = (self.sharing_r * self.num_pe_per_tile) * self.single_cascaded_splitter_power
-
-        # self.architecture_switch_DAC_power = (self.sharing_r * self.num_pe_per_tile) * self.single_switch_DAC_power
-
 
         self.architecture_modulation_power = input_power_modulation / self.sharing_factor_r
 
         self.architecture_dac_power = input_power_dac / self.sharing_factor_r
-             
-
 
         self.architecture_TIA_power =  core_TIA_power / self.sharing_factor_c
 
         self.architecture_adc_power = core_power_adc / self.sharing_factor_c
-
-
-        # self.architecture_dac_weight_power = (self.num_tiles * self.num_pe_per_tile) \
-        #                                      * self.core_power_dac_weight
 
         layer_energy_breakdown["PD"] = self.architecture_photo_detector_power
         layer_energy_breakdown["MZM"] = self.architecture_modulation_power
@@ -807,9 +727,7 @@ class PhotonicCrossbar(PhotonicCore):
 
         self.architecture_power = (
                 self.architecture_modulation_power
-                # + self.architecture_cascaded_splitter_power
                 + self.architecture_dac_power
-                # + self.architecture_phase_shifter_power
                 + self.architecture_photo_detector_power
                 + self.architecture_TIA_power
                 + self.architecture_adc_power
@@ -919,77 +837,6 @@ class PhotonicCrossbar(PhotonicCore):
 
         return node_area
 
-    def cal_sparsity_core_power(self):
-        self.input_power_dac_sp = (self.core_height - self.empty_rows) * self.num_wavelength * self.core_DAC_power
-
-        self.input_power_modulation_sp = (self.core_height - self.empty_rows) * self.num_wavelength \
-                                         * (self.modulator_power_static + self.modulator_power_dynamic
-                                            + self.mrr_router_power * (2 if self.num_wavelength > 1 else 0))
-
-        self.core_phase_shifter_power_sp = (
-                (self.core_height - self.empty_rows)
-                * (self.core_width - self.empty_column)
-                * self.phase_shifter_power_static * 2
-        )
-
-        self.core_photo_detector_power_sp = (
-                (self.core_height - self.empty_rows)
-                * (self.core_width - self.empty_column)
-                * self.photo_detector_power
-                * 2
-        )
-
-        self.core_TIA_power_sp = (
-                (self.core_width - self.empty_column)
-                * self.TIA_power
-        )
-
-        self.core_power_adc_sp = (
-                (self.core_width - self.empty_column)
-                * self.core_ADC_power
-        )
-
-        self.core_power_dac_weight_sp = (
-                (self.core_height - self.empty_rows)
-                * (self.core_width - self.empty_column)
-                * self.core_DAC_weight_power
-        )
-
-        return
-
-    def cal_sparsity_architecture_power(self):
-        # self.architecture_laser_power_sp = (self.num_tiles * self.num_pe_per_tile) * self.input_power_laser
-
-        self.architecture_phase_shifter_power_sp = (self.num_tiles * self.num_pe_per_tile) \
-                                                    * self.core_phase_shifter_power_sp
-
-        self.architecture_photo_detector_power_sp = (self.num_tiles * self.num_pe_per_tile) \
-                                                    * self.core_photo_detector_power_sp
-
-        self.architecture_modulation_power_sp = (self.num_tiles * self.num_pe_per_tile) \
-                                                * self.input_power_modulation_sp
-
-        self.architecture_dac_power_sp = (self.num_tiles * self.num_pe_per_tile) \
-                                         * self.input_power_dac_sp
-
-        self.architecture_TIA_power_sp = (self.num_tiles * self.num_pe_per_tile) * self.core_TIA_power_sp
-
-        self.architecture_adc_power_sp = (self.num_tiles * self.num_pe_per_tile) * self.core_power_adc_sp
-
-        self.architecture_dac_weight_power_sp = (self.num_tiles * self.num_pe_per_tile) \
-                                                * self.core_power_dac_weight_sp
-
-        self.architecture_power_sp = (
-                self.architecture_modulation_power_sp
-                + self.architecture_dac_power_sp
-                + self.architecture_dac_weight_power_sp
-                + self.architecture_phase_shifter_power_sp
-                + self.architecture_photo_detector_power_sp
-                + self.architecture_TIA_power_sp
-                + self.architecture_adc_power_sp
-        )
-
-        return self.architecture_power_sp
 
     def cal_architecture_power(self):
 
@@ -1130,47 +977,3 @@ class PhotonicCrossbar(PhotonicCore):
     def cal_laser_energy(self):
         self.laser_energy = self.laser_power / (self.work_freq)
         return self.laser_energy
-
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument(
-#         "config", default=".params.yaml", metavar="FILE", help="config file"
-#     )
-#     args, opts = parser.parse_known_args()
-
-#     configs.load(args.config, recursive=True)
-#     configs.update(opts)
-
-#     width = configs.core.width
-#     height = configs.core.height
-#     wavelength = configs.core.num_wavelength
-#     print(configs)
-#     test_pc = PhotonicCrossbar(
-#         core_width=configs.core.width,
-#         core_height=configs.core.height,
-#         num_wavelength=configs.core.num_wavelength,
-#         in_bit=configs.core.precision.in_bit,
-#         w_bit=configs.core.precision.w_bit,
-#         act_bit=configs.core.precision.act_bit,
-#         config=configs,
-#     )
-
-#     work_freq = 5
-#     test_pc.set_work_frequency(work_freq=work_freq)
-#     crossbar_power = test_pc.cal_core_power()
-#     area = test_pc.cal_core_area()
-#     print(
-#         f"Energy efficiency is {2 * width * height * wavelength * work_freq / (crossbar_power * 1e-3) * 1e-3} TOPS/W"
-#     )
-#     print(
-#         f"Computation density is {2 * width * height * wavelength * work_freq / (area * 1e-6) * 1e-3} TOPS/mm^2"
-#     )
-#     print(
-#         f"MAC energy efficiency is {crossbar_power / work_freq / (width * height * wavelength) * 1e3} fJ/MAC"
-#     )
-    # print(test_pc.cal_TX_energy())
-    # print(test_pc.cal_D2A_energy())
-    # print(test_pc.cal_comp_energy())
-    # print(test_pc.cal_A2D_energy())
-    # print(test_pc.cal_RX_energy())

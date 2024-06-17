@@ -2,147 +2,26 @@
 # coding=UTF-8
 import argparse
 import os
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Iterable
 
 import mlflow
 import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-import torch.nn.functional as F
 from pyutils.config import configs, Config
 from pyutils.general import AverageMeter
 from pyutils.general import logger as lg
 from pyutils.torch_train import (
-    BestKModelSaver,
     count_parameters,
-    get_learning_rate,
     load_model,
     set_torch_deterministic,
 )
-from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
+from pyutils.typing import Criterion, DataLoader
 from core.models.dst2 import MultiMask
 from hardware.photonic_crossbar import PhotonicCrossbar
 from core import builder
-from core.datasets.mixup import Mixup, MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
-
-
-def train(
-    model: nn.Module,
-    train_loader: DataLoader,
-    optimizer: Optimizer,
-    scheduler: Scheduler,
-    epoch: int,
-    criterion: Criterion,
-    aux_criterions: Dict,
-    mixup_fn: Callable = None,
-    device: torch.device = torch.device("cuda:0"),
-    grad_scaler: Optional[Callable] = None,
-    teacher: Optional[nn.Module] = None,
-    dst_scheduler: Optional[Callable] = None,
-) -> None:
-    model.train()
-    step = epoch * len(train_loader)
-
-    class_meter = AverageMeter("ce")
-    aux_meters = {name: AverageMeter(name) for name in aux_criterions}
-    aux_output_weight = getattr(configs.criterion, "aux_output_weight", 0)
-
-    data_counter = 0
-    correct = 0
-    total_data = len(train_loader.dataset)
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data = data.to(device, non_blocking=True)
-        data_counter += data.shape[0]
-
-        target = target.to(device, non_blocking=True)
-        if mixup_fn is not None:
-            data, target = mixup_fn(data, target)
-
-        with amp.autocast(enabled=grad_scaler._enabled):
-            output = model(data)
-            class_loss = criterion(output, target)
-            class_meter.update(class_loss.item())
-            loss = class_loss
-
-            for name, config in aux_criterions.items():
-                aux_criterion, weight = config
-                aux_loss = 0
-                if name in {"kd", "dkd"} and teacher is not None:
-                    with torch.no_grad():
-                        teacher_scores = teacher(data).data.detach()
-                    aux_loss = weight * aux_criterion(output, teacher_scores, target)
-                elif name == "mse_distill" and teacher is not None:
-                    with torch.no_grad():
-                        teacher(data).data.detach()
-                    teacher_hiddens = [
-                        m._recorded_hidden
-                        for m in teacher.modules()
-                        if hasattr(m, "_recorded_hidden")
-                    ]
-                    student_hiddens = [
-                        m._recorded_hidden
-                        for m in model.modules()
-                        if hasattr(m, "_recorded_hidden")
-                    ]
-
-                    aux_loss = weight * sum(
-                        F.mse_loss(h1, h2)
-                        for h1, h2 in zip(teacher_hiddens, student_hiddens)
-                    )
-                loss = loss + aux_loss
-                aux_meters[name].update(aux_loss)
-        pred = output.data.max(1)[1]
-        correct += pred.eq(target.data).sum().item()
-
-        optimizer.zero_grad()
-        grad_scaler.scale(loss).backward()
-        grad_scaler.unscale_(optimizer)
-        if configs.run.grad_clip:
-            torch.nn.utils.clip_grad_value_(
-                [p for p in model.parameters() if p.requires_grad],
-                float(configs.run.max_grad_value),
-            )
-        grad_scaler.step(optimizer)
-        grad_scaler.update()
-        step += 1
-
-        if dst_scheduler is not None:
-            dst_scheduler.step()  # apply pruning mask and update rate
-
-        if batch_idx % int(configs.run.log_interval) == 0:
-            log = "Train Epoch: {} [{:7d}/{:7d} ({:3.0f}%)] Loss: {:.4e} class Loss: {:.4e}".format(
-                epoch,
-                data_counter,
-                total_data,
-                100.0 * data_counter / total_data,
-                loss.data.item(),
-                class_loss.data.item(),
-            )
-            for name, aux_meter in aux_meters.items():
-                log += f" {name}: {aux_meter.val:.4e}"
-            lg.info(log)
-
-            mlflow.log_metrics({"train_loss": loss.item()}, step=step)
-
-    scheduler.step()
-    avg_class_loss = class_meter.avg
-    accuracy = 100.0 * correct / total_data
-    lg.info(
-        f"Train class Loss: {avg_class_loss:.4e}, Accuracy: {correct}/{total_data} ({accuracy:.2f}%)"
-    )
-    mlflow.log_metrics(
-        {
-            "train_class": avg_class_loss,
-            "train_acc": accuracy,
-            "lr": get_learning_rate(optimizer),
-        },
-        step=epoch,
-    )
-    if dst_scheduler is not None:
-        lg.info(f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}")
-        lg.info(f"Power:{dst_scheduler.get_total_power()}")
 
 
 def validate(
@@ -220,13 +99,6 @@ def test(
     accuracy = 100.0 * correct / len(test_loader.dataset)
     accuracy_vector.append(accuracy)
 
-    # lg.info(
-    #     f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
-    # )
-
-    # mlflow.log_metrics(
-    #     {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
-    # )
     return accuracy
 
 
@@ -261,7 +133,7 @@ def main() -> None:
         device = torch.device("cpu")
         torch.backends.cudnn.benchmark = False
 
-    if int(configs.run.deterministic) == True:
+    if bool(configs.run.deterministic):
         set_torch_deterministic()
 
     train_loader, validation_loader, test_loader = builder.make_dataloader(
@@ -295,7 +167,7 @@ def main() -> None:
         name=configs.optimizer.name,
         configs=configs.optimizer,
     )
-    scheduler = builder.make_scheduler(optimizer)
+
     criterion = builder.make_criterion(configs.criterion.name, configs.criterion).to(
         device
     )
@@ -316,7 +188,6 @@ def main() -> None:
         register_hidden_hooks(model)
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
-        print(f"Register hidden state hooks for teacher and students")
 
     if configs.dst_scheduler == "None":
         configs.dst_scheduler = None
@@ -328,18 +199,6 @@ def main() -> None:
     else:
         dst_scheduler = None
     lg.info(model)
-    mixup_config = configs.dataset.augment
-    mixup_fn = MixupAll(**mixup_config) if mixup_config is not None else None
-    test_mixup_fn = (
-        MixupAll(**configs.dataset.test_augment) if mixup_config is not None else None
-    )
-    saver = BestKModelSaver(
-        k=int(configs.checkpoint.save_best_model_k),
-        descend=True,
-        truncate=2,
-        metric_name="acc",
-        format="{:.2f}",
-    )
     grad_scaler = amp.GradScaler(enabled=getattr(configs.run, "fp16", False))
     lg.info(f"Number of parameters: {count_parameters(model)}")
 
@@ -351,7 +210,6 @@ def main() -> None:
     mlflow.set_experiment(configs.run.experiment)
     experiment = mlflow.get_experiment_by_name(configs.run.experiment)
 
-    # run_id_prefix = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     mlflow.start_run(run_name=model_name)
     mlflow.log_params(
         {
@@ -366,7 +224,6 @@ def main() -> None:
     )
 
     lossv, accv = [0], [0]
-    epoch = 0
 
     try:
         lg.info(
@@ -431,38 +288,27 @@ def main() -> None:
         model.set_input_power_gating(configs.noise.input_power_gating, configs.noise.input_modulation_ER)
         model.set_output_power_gating(configs.noise.output_power_gating)
 
-        interv_s_minax = [9, 10]
+        interv_s_minax = [configs.noise.crosstalk_scheduler.interv_s_min, configs.noise.crosstalk_scheduler.interv_s_max]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-        interv_h_s_minax = [1, 5]
+        interv_h_s_minax = [configs.noise.crosstalk_scheduler.interv_g_min, configs.noise.crosstalk_scheduler.interv_g_max]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
         R = configs.arch.arch.num_tiles
         C = configs.arch.arch.num_pe_per_tile
 
         mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
-        
-        # for name, m in model.named_modules():
-        #     if isinstance(m, model._conv):  # no last fc layer
-        #         if m.prune_mask is not None:
-        #             print(m.prune_mask["row_mask"].cpu().numpy())
-        #             print(m.prune_mask["col_mask"].cpu().numpy())
+    
 
         total_cycles = 0
         for key, value in cycle_dict.items():
             total_cycles += value[0]  
-
-        # layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model)
         
         acc_list = []
-        avg_power_list = []
         total_energy_list = []
         layer_energy_list = []
         layer_energy_breakdown_list = []
         network_energy_breakdown_list = []
-        layer_power_list = []
-        layer_power_breakdown_list = []
-        network_power_breakdown_list = []
         for interv_s in interv_s_range:
             for interv_h_s in interv_h_s_range:
                 interv_h = interv_h_s + interv_s + model.crosstalk_scheduler.ps_width
@@ -490,7 +336,6 @@ def main() -> None:
                 acc = np.mean(accs)
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
-            # next(iter(test_loader))[0].shape
             layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model, configs.noise.input_power_gating, configs.noise.output_power_gating)
             mzi_total_energy, mzi_energy_dict, _, _, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
             for key in layer_energy:
@@ -509,14 +354,14 @@ def main() -> None:
             network_energy_breakdown_list.append(newtwork_energy_breakdown_np)
             total_energy_list.append(total_energy)
 
-            print(layer_energy)
-            print(layer_energy_breakdown)
-            print(newtwork_energy_breakdown)
-            print(total_energy)
+            lg.info("Energy Breakdown: \n")
+            lg.info(layer_energy)
+            lg.info(layer_energy_breakdown)
+            lg.info(newtwork_energy_breakdown)
+            lg.info(total_energy)
 
 
             for layer, components in layer_energy_breakdown.items():
-                    # print(layer_energy[layer])
                     layer_energy[layer] = layer_energy[layer]/ (cycle_dict[layer][0] / work_freq / 1e9)
                     for component, value in components.items():
                             components[component] = value / (cycle_dict[layer][0] / work_freq / 1e9)
@@ -526,57 +371,17 @@ def main() -> None:
 
             total_energy = total_energy / (total_cycles / work_freq / 1e9)
             
-            print(layer_energy)
-            print(layer_energy_breakdown)
-            print(newtwork_energy_breakdown)
-            print(total_energy)
-
-            layer_power_np = np.array(list(layer_energy.items()), dtype='object')
-            layer_power_breakdown_np = np.array(list(layer_energy_breakdown.items()), dtype='object')
-            newtwork_power_breakdown_np = np.array(list(newtwork_energy_breakdown.items()), dtype='object')
-
-            layer_power_list.append(layer_power_np)
-            layer_power_breakdown_list.append(layer_power_breakdown_np)
-            network_power_breakdown_list.append(newtwork_power_breakdown_np)
-            avg_power_list.append(total_energy)
-
+            lg.info("Power Breakdown: \n")
+            lg.info(layer_energy)
+            lg.info(layer_energy_breakdown)
+            lg.info(newtwork_energy_breakdown)
+            lg.info(total_energy)
 
         acc_list = np.array(acc_list)
-
-        avg_power_list = np.array(avg_power_list)
-        layer_power_list = np.array(layer_power_list)
-        layer_power_breakdown_list = np.array(layer_power_breakdown_list)
-        network_power_breakdown_list = np.array(network_power_breakdown_list)
-
-        layer_energy_list = np.array(layer_energy_list)
-        layer_energy_breakdown_list = np.array(layer_energy_breakdown_list)
-        network_energy_breakdown_list = np.array(network_energy_breakdown_list)
-        total_energy_list = np.array(total_energy_list)
-
-        # print(acc_list.tolist())
-        # print(avg_power_list.tolist())
-        # print(layer_power_list.tolist())
-        # print(layer_power_breakdown_list.tolist())
-        # print(network_power_breakdown_list.tolist())
-        # print(layer_energy_list.tolist())
-        # print(layer_energy_breakdown_list.tolist())
-        # print(network_energy_breakdown_list.tolist())
-        # print(total_energy_list.tolist())
-
-
 
 
         np.savetxt(f"{configs.loginfo}.csv",  acc_list, delimiter=",", fmt="%.2f")
         np.savetxt(f"{configs.loginfo}_acc_matrix.csv",  acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]), delimiter=",", fmt="%.2f")
-        np.savetxt(f"{configs.loginfo}_avgpower_list.csv",  avg_power_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"{configs.loginfo}_network_total_energy_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"{configs.loginfo}_layer_power_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"{configs.loginfo}_layer_energy_list.csv", total_energy_list, delimiter=",", fmt="%.2f")
-        # np.savetxt(f"{configs.loginfo}_layer_energy_breakdown_list.txt", total_energy_list)
-        # np.savetxt(f"{configs.loginfo}_layer_power_breakdown_list.txt", total_energy_list)
-        # np.savetxt(f"{configs.loginfo}_network_energy_breakdown_list.txt", total_energy_list)
-        # np.savetxt(f"{configs.loginfo}_network_power_breakdown_list.txt", total_energy_list)
-
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")

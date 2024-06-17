@@ -2,10 +2,9 @@
 # coding=UTF-8
 import argparse
 import os
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, Optional
 
 import mlflow
-import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -23,7 +22,7 @@ from pyutils.torch_train import (
 from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
 
 from core import builder
-from core.datasets.mixup import Mixup, MixupAll
+from core.datasets.mixup import MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
 
 
@@ -45,7 +44,6 @@ def train(
 
     class_meter = AverageMeter("ce")
     aux_meters = {name: AverageMeter(name) for name in aux_criterions}
-    aux_output_weight = getattr(configs.criterion, "aux_output_weight", 0)
 
     data_counter = 0
     correct = 0
@@ -226,8 +224,6 @@ def test(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("config", metavar="FILE", help="config file")
-    # parser.add_argument('--run-dir', metavar='DIR', help='run directory')
-    # parser.add_argument('--pdb', action='store_true', help='pdb')
     args, opts = parser.parse_known_args()
 
     configs.load(args.config, recursive=True)
@@ -242,7 +238,7 @@ def main() -> None:
         device = torch.device("cpu")
         torch.backends.cudnn.benchmark = False
 
-    if int(configs.run.deterministic) == True:
+    if bool(configs.run.deterministic):
         set_torch_deterministic()
 
     train_loader, validation_loader, test_loader = builder.make_dataloader(
@@ -296,7 +292,7 @@ def main() -> None:
         register_hidden_hooks(model)
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
-        print(f"Register hidden state hooks for teacher and students")
+        print("Register hidden state hooks for teacher and students")
 
     mixup_config = configs.dataset.augment
     mixup_fn = MixupAll(**mixup_config) if mixup_config is not None else None
@@ -321,7 +317,6 @@ def main() -> None:
     mlflow.set_experiment(configs.run.experiment)
     experiment = mlflow.get_experiment_by_name(configs.run.experiment)
 
-    # run_id_prefix = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     mlflow.start_run(run_name=model_name)
     mlflow.log_params(
         {

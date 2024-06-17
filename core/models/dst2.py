@@ -2,21 +2,17 @@ from __future__ import print_function
 
 import copy
 import math
-import random
-from itertools import combinations
-from typing import Callable, Dict, List, Optional, Tuple, Union
 from functools import lru_cache
+from itertools import combinations
+from typing import List, Tuple
+
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.optim as optim
-from pyutils.general import logger, ensure_dir
+from pyutils.general import logger
 from torch import Tensor, nn
-import matplotlib.pyplot as plt
 
 __all__ = ["DSTScheduler2", "CosineDecay", "LinearDecay"]
-
-DEBUG = False
 
 
 class CosineDecay(object):
@@ -96,8 +92,9 @@ class MultiMask(object):
 
         try:
             mask = self.data
-        except:
-            raise ValueError("mask shapes should be able to multiplied together.")
+        
+        except (ValueError, TypeError) as e:
+            raise ValueError("mask shapes should be able to multiplied together.") from e
 
         self.total_elem = mask.numel()
         self.shape = mask.shape
@@ -243,6 +240,7 @@ class DSTScheduler2(nn.Module):
         ADC_power: float = 7.4,
         TIA_power: float = 3,
         HDAC_power: float = 5.74,
+        arch_sim = None,
         skip_first_layer=False,
         skip_last_layer = True,
         update_frequency: int = 100,
@@ -328,9 +326,14 @@ class DSTScheduler2(nn.Module):
         self.set_grow_power_exploration(False)
         self.pi_shift_power = pi_shift_power
         self.power_choice_margin = power_choice_margin
-        self.ADC_power = ADC_power
-        self.TIA_power = TIA_power
-        self.HDAC_power = HDAC_power
+        if arch_sim is None:
+            self.ADC_power = ADC_power
+            self.TIA_power = TIA_power
+            self.HDAC_power = HDAC_power
+        else:
+            self.ADC_power = arch_sim.core_ADC_power
+            self.TIA_power = arch_sim.TIA_power
+            self.HDAC_power = arch_sim.core_DAC_power
         self.keep_same = keep_same
         self.first_conv_idx = None
         self.first_conv_name = None
@@ -395,10 +398,10 @@ class DSTScheduler2(nn.Module):
                     m.prune_mask = self.masks[
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
-                    m.register_buffer(f"prune_mask", m.prune_mask["elem_mask"])
-            logger.info(f"created pruning mask.")
+                    m.register_buffer("prune_mask", m.prune_mask["elem_mask"])
+            logger.info("created pruning mask.")
             self.unstructure_init(mode=init_mode, density=density, mask_file=mask_path)
-            logger.info(f"initialized pruning mask.")
+            logger.info("initialized pruning mask.")
         elif pruning_type in {"structure_row", "structure_col", "structure_row_col"}:
             self.modules.append(module)
             self.set_splitter_bias(biases=self.splitter_biases)
@@ -432,13 +435,13 @@ class DSTScheduler2(nn.Module):
                         name_cur
                     ]  # the layer needs the mask to perform forward computation, pruning the weight is not enough.
                     self.layers[name_cur] = m
-                    m.register_buffer(f"row_prune_mask", m.prune_mask["row_mask"])
-                    m.register_buffer(f"col_prune_mask", m.prune_mask["col_mask"])
-            logger.info(f"created pruning mask.")
+                    m.register_buffer("row_prune_mask", m.prune_mask["row_mask"])
+                    m.register_buffer("col_prune_mask", m.prune_mask["col_mask"])
+            logger.info("created pruning mask.")
             self.structure_init(mode=init_mode, density=density, mask_file=mask_path)
 
             print(self.modules)
-            logger.info(f"initialized pruning mask.")
+            logger.info("initialized pruning mask.")
 
         else:
             raise ValueError("unrecognize pruning type")
@@ -551,19 +554,12 @@ class DSTScheduler2(nn.Module):
         n_levels = int(np.log2(ports_array.shape[1]))
         ports_array = ports_array.view([-1] + [2] * n_levels)
         power = 0
-        # if DEBUG:
-        #     print("ports_array shape:", ports_array.shape)
-        #     print("n_levels:", n_levels)
-        #     print(ports_array)
         for level in range(n_levels):
             ## e.g., k=8, n_levels=3
             ## L0: [..., 2, <2, 2>] sum[-2, -1],
             ## L1: [..., 2, 2, <2>] sum[-1],
             ## L2: [..., 2, 2, 2]   sum[],
             sum_dims = list(range(level - n_levels + 1, 0, 1))
-            # if DEBUG:
-            #     print(f"---------------- level {level}")
-            #     print(f"sum_dims", sum_dims)
             if len(sum_dims) > 0:
                 ports_sum = ports_array.sum(dim=sum_dims)
             else:
@@ -579,14 +575,7 @@ class DSTScheduler2(nn.Module):
             ## L1: [..., <2, 2>]    sum[-2, -1],
             ## L2: [..., <2, 2, 2>] sum[-3, -2, -1],
             sum_dims = list(range(-1 - level, 0, 1))
-            ## cos^2((delta_phi + pi/2)/2) = ratio
-            ## (1-sin(delta_phi))/2 = ratio
-            ## |delta_phi| = |arccos(sqrt(ratio)) * 2 - pi/2|
-            # delta_phi = (ratios.sqrt_()
-            #     .acos()
-            #     .mul_(2)
-            #     .sub_(np.pi / 2))
-            # print(delta_phi)
+
             angle = (
                 ratios.sqrt_()  # \in [0, 1]
                 .acos()  # \in [pi/2, 0]
@@ -598,24 +587,7 @@ class DSTScheduler2(nn.Module):
             ## use crosstalk scheduler to compute the power with fitted curve of simulation data
             ## here we make sure angle is in the range of [-pi/2, pi/2]
             p = self.modules[0].crosstalk_scheduler.calc_MZI_power(angle.data, interv_s=10, reduction="none").sum(dim=sum_dims)
-            # p = (
-            #     ratios.sqrt_()
-            #     .acos()
-            #     .mul_(2)
-            #     .sub_(self.splitter_biases[level])
-            #     .abs_()
-            #     .mul_(self.pi_shift_power / np.pi)
-            #     .sum(dim=sum_dims)
-            # )  # [#combinations]
-            # p = (
-            #     ratios.mul_(-2).add_(1)
-            #     .asin_()
-            #     .abs_()
-            #     .mul_(self.pi_shift_power / np.pi)
-            #     .sum(dim=sum_dims)
-            # )  # [#combinations]
-            # print("ratio", ratios)
-            # print("p", p)
+            
             power += p
 
         # print(power)
@@ -694,54 +666,6 @@ class DSTScheduler2(nn.Module):
         lowest_power = pattern_powers.min()
         return patterns[pattern_powers == lowest_power], lowest_power.item()
 
-    # def _possible_patterns(self, num_zeros, array_length):
-    #     if num_zeros > array_length:
-    #         return "The number of zeros cannot exceed the total array length."
-
-    #     # Generate all possible positions for zeros in the array
-    #     indices = range(array_length)
-    #     zero_positions = list(combinations(indices, num_zeros))
-    #     patterns = []
-    #     for positions in zero_positions:
-    #         # Initialize the array with all ones
-
-    #         array = [1] * array_length
-    #         # Place zeros in the specified positions
-
-    #         for pos in positions:
-    #             array[pos] = 0
-
-    #         patterns.append(array)
-
-    #     return patterns
-
-    # def _sparsity_pattern_power_dictionary(self, num_zeros, array_length):
-    #     # Ensure that the number of zeros does not exceed the array length
-
-    #     if num_zeros > array_length:
-    #         return "The number of zeros cannot exceed the total array length."
-
-    #     # Generate all possible positions for zeros in the array
-    #     indices = range(array_length)
-    #     zero_positions = list(combinations(indices, num_zeros))
-    #     power_dict = defaultdict(list)
-
-    #     for positions in zero_positions:
-    #         # Initialize the array with all ones
-
-    #         array = [1] * array_length
-    #         # Place zeros in the specified positions
-
-    #         for pos in positions:
-    #             array[pos] = 0
-
-    #         # Calculate the power for this array configuration
-    #         power = self._calc_total_and_upper_ports(array)
-
-    #         # Add the power and array pair to the dictionary
-    #         power_dict[power].append(array)
-
-    #     return {key: value for key, value in sorted(power_dict.items())}
 
     def find_least_crosstalk_patterns(
         self, masks: Tensor, is_col: bool = True
@@ -765,10 +689,6 @@ class DSTScheduler2(nn.Module):
             scores.append(score)
         scores = torch.tensor(scores)
         max_score = scores.max().item()
-        if DEBUG:
-            print(masks.shape, masks)
-            print("crosstalk_scores:", scores)
-            print("Max score:", max_score)
 
         return masks[scores == max_score], max_score
 
@@ -776,35 +696,12 @@ class DSTScheduler2(nn.Module):
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
         # active_indices = torch.nonzero(mask).squeeze()  # e.g., [0, 1, 3, 5]
-        # num_active = active_indices.numel()
-        # if num_active < 2:
-        #     # Not enough active elements to calc separation or density.
-        #     # should be higher than the best case with two actives
-        #     ## treated as 2 actives with distance of k
-        #     active_indices = torch.tensor([0, mask.shape[0]])
-        #     num_active = 2
-
-        # # calc distances between consecutive active elements
-
-        # dist = (
-        #     active_indices[None, ...] - active_indices[..., None]
-        # ).float().abs() * self.node_spacing[int(is_col)]
-        # total_crosstalk = torch.exp(-0.1 * dist).sum().item() - num_active
-
-        # return -total_crosstalk
         return self.modules[0].crosstalk_scheduler.calc_crosstalk_score(mask, is_col)
 
     def calc_crosstalk_scores(self, masks: Tensor, is_col: bool = True) -> Tensor:
         ## given a sparsity mask, find its crosstalk score, higher score means less crosstalk
         ## the crosstalk is the sum of the negative exp distance between active elements, sum(exp(-d_ij))
         ## mask: [num_combinations, array_length]
-        ## return: [num_combinations]
-        # shape = mask.shape[:-1]
-        # mask = mask.flatten(0, -2)
-        # total_crosstalk = []
-        # for m in mask:
-        #     total_crosstalk.append(self.calc_crosstalk_score(m, is_col))
-        # return torch.tensor(total_crosstalk, device=self.device).view(shape)
         return self.modules[0].crosstalk_scheduler.calc_crosstalk_scores(masks, is_col)
 
     def calc_TIA_ADC_powers(self, mask: Tensor) -> Tensor:
@@ -1024,10 +921,7 @@ class DSTScheduler2(nn.Module):
     def _structure_init_random(self, density: float = 0.05) -> None:
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
-                # mask["row_mask"].bernoulli_(p=density)
-                # mask["row_mask"] = self.generate_interleave_mask(mask, density, False, self.device)
                 mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                # print(mask["row_mask"])
 
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
@@ -1041,13 +935,10 @@ class DSTScheduler2(nn.Module):
                 if name == self.first_conv_name:
                     mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
                 else:
-                    # print("ROW COL THUS here")
                     row_density = max(density, 0.5)
                     col_density = density / row_density
                     mask["row_mask"].copy_(self.generate_interleave_mask(mask, row_density, False, self.device))
-                    # print("Doing row")
                     mask["col_mask"].bernoulli_(col_density)
-                    # print("Doing col")
         else:
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
 
@@ -1055,8 +946,6 @@ class DSTScheduler2(nn.Module):
         self, patterns: Tensor
     ) -> Tuple[Tensor, float]:
         powers = self.cal_ports_power(patterns)  # [#combinations]
-        if DEBUG:
-            print(f"calc power", powers.shape, powers)
         min_power_patterns, min_power = self.find_minimal_power_pattern(
             patterns, powers
         )
@@ -1070,32 +959,10 @@ class DSTScheduler2(nn.Module):
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
                 mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                # row_num = k1 = self.params[name].shape[-2]
-                # empty_row_num = int(round(row_num * (1 - density)))
-                # patterns = self.find_sparsity_patterns(
-                #     row_num, empty_row_num
-                # )  # [#combinations, col_num]
-                # for opt in opts:
-                #     if opt == "crosstalk":
-                #         patterns, _ = self.find_least_crosstalk_patterns(
-                #             patterns, is_col=False
-                #         )
-                # mask["row_mask"][..., :, 0] = patterns[0]
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
                     mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                    # row_num = k1 = self.params[name].shape[-2]
-                    # empty_row_num = int(round(row_num * (1 - density)))
-                    # patterns = self.find_sparsity_patterns(
-                    #     row_num, empty_row_num
-                    # )  # [#combinations, col_num]
-                    # for opt in opts:
-                    #     if opt == "crosstalk":
-                    #         patterns, _ = self.find_least_crosstalk_patterns(
-                    #             patterns, is_col=False
-                    #         )
-                    # mask["row_mask"][..., :, 0] = patterns[0]
                 else:
                     ## assume all blocks have the same initial sparsity mask with min power
                     ## just select k2' from k2 with min power
@@ -1104,14 +971,9 @@ class DSTScheduler2(nn.Module):
                     patterns = self.find_sparsity_patterns(
                         col_num, empty_col_num
                     )  # [#combinations, col_num]
-                    if DEBUG:
-                        print(f"select {empty_col_num} from {col_num}")
-                        print("patterns", patterns.shape, patterns)
                     for opt in opts:
                         if opt == "power":
                             patterns, _ = self.find_least_switch_power_patterns(patterns)
-                            if DEBUG:
-                                print(f"after power opt", patterns.shape, patterns)
                         elif opt == "crosstalk":
                             patterns, _ = self.find_least_crosstalk_patterns(
                                 patterns, is_col=True
@@ -1123,17 +985,6 @@ class DSTScheduler2(nn.Module):
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
                     mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                    # row_num = k1 = self.params[name].shape[-2]
-                    # empty_row_num = int(round(row_num * (1 - density)))
-                    # patterns = self.find_sparsity_patterns(
-                    #     row_num, empty_row_num
-                    # )  # [#combinations, col_num]
-                    # for opt in opts:
-                    #     if opt == "crosstalk":
-                    #         patterns, _ = self.find_least_crosstalk_patterns(
-                    #             patterns, is_col=False
-                    #         )
-                    # mask["row_mask"][..., :, 0] = patterns[0]
                 else:
                     row_density = max(density, 0.5)
                     col_density = density / row_density
@@ -1154,10 +1005,6 @@ class DSTScheduler2(nn.Module):
                             )
 
                             col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
-                            # row_patterns = self.find_sparsity_patterns(row_num, empty_row_num)
-                            if DEBUG:
-                                print("col_pattern:", col_patterns)
-                                # print("row_pattern:", row_patterns)
                             score = {}
                             for opt in opts:
                                 if opt == "power":
@@ -1179,13 +1026,6 @@ class DSTScheduler2(nn.Module):
                                             col_patterns, is_col=True
                                         )
                                     )
-                                    # row_patterns, row_crosstalk = (
-                                    #     self.find_least_crosstalk_patterns(
-                                    #         row_patterns, is_col=False
-                                    #     )
-                                    # )
-
-                                    # score["crosstalk"] = col_crosstalk + row_crosstalk
                                     score["crosstalk"] = col_crosstalk
                                 else:
                                     raise NotImplementedError
@@ -1193,11 +1033,9 @@ class DSTScheduler2(nn.Module):
                             # prioritize the first opt
                             if score[opts[0]] > best_score:
                                 best_score = score[opts[0]]
-                                # best_row_patterns = row_patterns
                                 best_col_patterns = col_patterns
 
                         self.masks[name]["col_mask"][..., :] = best_col_patterns[0]
-                    # self.masks[name]["row_mask"][..., :, 0] = best_row_patterns[0]
         else:
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
 
@@ -1315,12 +1153,10 @@ class DSTScheduler2(nn.Module):
                 new_mask = self.magnitude_death(mask, weight, name)
             elif self.death_mode.startswith("magnitude"):
                 if name == self.first_conv_name:
-                    # new_mask = self.row_only_magnitude_death(mask, weight, name)
                     new_mask = mask
 
                 elif pruning_type == "structure_row":
                     new_mask = mask
-                    # new_mask = self.row_only_magnitude_death(mask, weight, name)
                 elif pruning_type == "structure_col":
                     new_mask = self.col_only_magnitude_death(mask, weight, name)
                 elif pruning_type == "structure_row_col":
@@ -1328,8 +1164,6 @@ class DSTScheduler2(nn.Module):
                         new_mask = self.col_only_magnitude_death(mask, weight, name)
                     else:
                         new_mask = mask
-                    # new_mask = self.row_col_magnitude_death(mask, weight, name)
-                    # self.remainings[name] = remaining
                 else:
                     raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             elif self.death_mode == "SET":
@@ -1358,30 +1192,20 @@ class DSTScheduler2(nn.Module):
                 )
             elif self.growth_mode.startswith("gradient"):
                 if name == self.first_conv_name:
-                    # new_mask = self.row_only_gradient_growth(
-                    #     name, mask, self.pruned_number[name], weight
-                    # )
                     new_mask = mask
                 elif self.pruning_type == "structure_row":
                     new_mask = mask
-                    # new_mask = self.row_only_gradient_growth(
-                    #     name, mask, self.pruned_number[name], weight
-                    # )
                 elif self.pruning_type == "structure_col":
                     new_mask = self.col_only_gradient_growth(
                         name, mask, self.pruned_number[name], weight
                     )
                 elif self.pruning_type == "structure_row_col":
                     if self.density_dict[name] < 0.5:
-                        # new_mask = self.row_col_gradient_growth(
-                        #     name, mask, self.total_regrowth[name], weight
-                        # )
                         new_mask = self.col_only_gradient_growth(
                             name, mask, self.pruned_number[name], weight
                         )
                     else:
                         new_mask = mask
-                    # self.remainings[name] = remaining
                 else:
                     raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             self.masks[name] = new_mask
@@ -1396,16 +1220,6 @@ class DSTScheduler2(nn.Module):
             self.update_death_mask(pruning_type)
             self.update_growth_mask(pruning_type)
 
-        # index = 0
-        # for idx, (name, m) in enumerate(self.modules[0].named_modules()):
-        #     if (isinstance(m, self.modules[0]._conv_linear) and idx != self.last_linear_idx):
-        #         if self.skip_first_layer and idx == self.first_conv_idx:
-        #             continue
-        #         name_cur = name + "_" + str(index)
-        #         index += 1
-        #         m.prune_mask = self.masks[name_cur]
-        #         m.row_prune_mask = self.masks[name_cur]["row_mask"]
-        #         m.col_prune_mask = self.masks[name_cur]["col_mask"]
         for name, layer in self.layers.items():
             layer.prune_mask = self.masks[name]
             layer.row_prune_mask = self.masks[name]["row_mask"]
@@ -1565,7 +1379,6 @@ class DSTScheduler2(nn.Module):
         num_zeros = self.name2zeros[name]
 
         x, idx = torch.sort(torch.abs(weight.data.view(-1)))
-        n = idx.shape[0]
 
         k = math.ceil(num_zeros + num_remove)
         threshold = x[k - 1].item()
@@ -1574,7 +1387,6 @@ class DSTScheduler2(nn.Module):
 
     def magnitude_and_negativity_death(self, mask, weight, name):
         num_remove = math.ceil(self.name2death_rate[name] * self.name2nonzeros[name])
-        num_zeros = self.name2zeros[name]
 
         # find magnitude threshold
         # remove all weights which absolute value is smaller than threshold
@@ -1755,13 +1567,6 @@ class DSTScheduler2(nn.Module):
                 selected_row_indices_flat, mask["row_mask"].shape
             )  # tuple of indices in each dimension of row_mask
 
-            if DEBUG:
-                print(f"row_mag", row_magnitude)
-                print(f"num_row_select", num_row_select)
-                print(f"num_row_select_candidates", num_row_select_candidates)
-                print(f"selected_row_indices", selected_row_indices_flat)
-                print(f"selected_row_indices unraveled", selected_row_indices)
-                print(mask["row_mask"].shape)
 
             # only magnitude sorting, no power or crosstalk optimization
             if len(opts) == 0 or num_row_select_candidates == num_row_select:
@@ -1818,13 +1623,6 @@ class DSTScheduler2(nn.Module):
                         row_index[indices] for row_index in selected_row_indices
                     )
 
-                    if DEBUG:
-                        print(f"-----------------\niter {i}")
-                        print(f"selected indices", indices)
-                        print(f"selected row indices", selected_row_indices_cand)
-                    ## check crosstalk score for this combination
-                    ## crosstalk can be calculated based on its index along k1 dimension
-
                     ## first try to prune rows in a cloned row_mask
                     mask_temp = mask.clone()
                     row_mask = mask_temp["row_mask"]
@@ -1841,60 +1639,12 @@ class DSTScheduler2(nn.Module):
                             )
                         )
 
-                    # for mask_indices in affected_mask_indices:
-
-                    # higher the better
-                    # gain = self.calc_crosstalk_score(
-                    #     row_mask[
-                    #         mask_indices[0],
-                    #         mask_indices[1],
-                    #         mask_indices[2],
-                    #         0,
-                    #         :,  # k1
-                    #         0,
-                    #     ],
-                    #     is_col=False,
-                    # ) - self.calc_crosstalk_score(
-                    #     mask["row_mask"][
-                    #         mask_indices[0],
-                    #         mask_indices[1],
-                    #         mask_indices[2],
-                    #         0,
-                    #         :,  # k1
-                    #         0,
-                    #     ],
-                    #     is_col=False,
-                    # )
                     affected_mask_indices = tuple(affected_mask_indices)
                     gain = obj_fn(
                         opt=opt,
                         mask_temp=mask_temp,
                         affected_mask_indices=affected_mask_indices,
                     )
-                    # total_crosstalk_gain += gain
-                    # if DEBUG:
-                    #     print(
-                    #         "crosstalk gain:",
-                    #         gain,
-                    #         "from",
-                    #         mask["row_mask"][
-                    #             mask_indices[0],
-                    #             mask_indices[1],
-                    #             mask_indices[2],
-                    #             0,
-                    #             :,  # k1
-                    #             0,
-                    #         ].long(),
-                    #         "to",
-                    #         row_mask[
-                    #             mask_indices[0],
-                    #             mask_indices[1],
-                    #             mask_indices[2],
-                    #             0,
-                    #             :,  # k1
-                    #             0,
-                    #         ].long(),
-                    #     )
 
                     if gain > best_gain:
                         best_gain = gain
@@ -1903,25 +1653,10 @@ class DSTScheduler2(nn.Module):
                     elif gain == best_gain:
                         best_row_masks.append(row_mask)
                         selected_range.append(indices)
-                    if DEBUG:
-                        print(f"-----------------\niter {i} {opt}")
-                        print(f"selected indices", indices)
-                        print(f"selected row indices", selected_row_indices_cand)
-                        print(f"gain", gain)
-                        print(f"best gain", best_gain)
-                        print(f"best row masks", len(best_row_masks))
 
                 # shrink the search range to the selected range
                 search_range = selected_range
-                if DEBUG:
-                    print(f"best gain {opt}", best_gain, len(best_row_masks))
-                    print(f"search_range", search_range)
-            if DEBUG:
-                print(
-                    f"best row masks final",
-                    len(best_row_masks),
-                    type(best_row_masks[0]),
-                )
+
             mask["row_mask"].copy_(best_row_masks[0])
             return mask
         elif self.group == "block":
@@ -1944,13 +1679,6 @@ class DSTScheduler2(nn.Module):
         # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
-
-        # if row_col:
-        #     num_col_select = int(
-        #         round(num_select / col_elements_average)
-        #     )  if col_elements_average > 0 else 0 # num of col p*q*c*k2
-        # else:
-            # num_col_select = int(round(num_select / (r * k1)))  # num of col p*q*c*k2
         num_col_select = int(round(num_select / mask["row_mask"][0,0].sum().item()))  # num of col p*q*c*k2
 
         if num_col_select == 0:
@@ -2025,8 +1753,6 @@ class DSTScheduler2(nn.Module):
                         for (p, q, c) in affected_mask_indices
                     )
                 elif opt == "power":
-                    if DEBUG:
-                        print(affected_mask_indices)
                     ps, qs, cs = zip(*affected_mask_indices)
                     gain = (
                         self.cal_ports_power(
@@ -2090,25 +1816,9 @@ class DSTScheduler2(nn.Module):
                     elif gain == best_gain:
                         best_col_masks.append(col_mask)
                         selected_range.append(indices)
-                    if DEBUG:
-                        print(f"-----------------\niter {i} {opt}")
-                        print(f"selected indices", indices)
-                        print(f"selected col indices", selected_col_indices_cand)
-                        print(f"gain", gain)
-                        print(f"best gain", best_gain)
-                        print(f"best col masks", len(best_col_masks))
 
                 # shrink the search range to the selected range
                 search_range = selected_range
-                if DEBUG:
-                    print(f"best gain {opt}", best_gain, len(best_col_masks))
-                    print(f"search_range", search_range)
-            if DEBUG:
-                print(
-                    f"best col masks final",
-                    len(best_col_masks),
-                    type(best_col_masks[0]),
-                )
             mask["col_mask"].copy_(best_col_masks[0])
             return mask
         elif self.group == "block":
@@ -2118,186 +1828,6 @@ class DSTScheduler2(nn.Module):
         else:
             raise NotImplementedError
 
-    def calculate_pruned_elements(
-        self,
-        row_elements: int,
-        col_elements: int,
-        rows_pruned: int,
-        cols_pruned: int,
-    ):
-        # Calculate the number of elements pruned when rows and columns are pruned
-        return row_elements * rows_pruned + (col_elements - rows_pruned) * cols_pruned
-
-    def helper_for_find_row_col_pruning_combination(
-        self,
-        depth: int,  # Current slide of mask
-        current_pruned: int,  # Number of elements been pruned away at current slide and slides befroe
-        upper_limit_pruning_number: int,
-        lower_limit_pruning_number: int,
-        max_depth: int,  # The maxiumn depth of slides
-        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
-        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
-        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
-        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
-        path: list,  # Possible solution, but will not be final solution unless is been appended into result
-        results: list,  # Final possible results
-        pruning_order: str = "col_row",  # Either "col_row" pruning order or "row_col" pruning order
-    ):
-
-        if lower_limit_pruning_number <= current_pruned <= upper_limit_pruning_number:
-            results.append(path.copy())  # Append a copy of the current path to results
-            return
-        if current_pruned > upper_limit_pruning_number or depth == max_depth:
-            return  # Stop if we have pruned too many elements or reached max depth
-
-        # Explore the number of rows and columns that can be pruned at the current depth
-        for r in range(active_rows[depth]):
-            for c in range(active_cols[depth]):
-                # Get the number of elements pruned away by this current choice
-                pruned_by_this_choice = self.calculate_pruned_elements(
-                    row_elements[depth].item(),
-                    col_elements[depth].item(),
-                    r,
-                    c,
-                    pruning_order,
-                )
-                print("Current choice pruned away elements:", pruned_by_this_choice)
-                print(
-                    "Current total pruned away elements:",
-                    current_pruned + pruned_by_this_choice,
-                )
-                if current_pruned + pruned_by_this_choice < lower_limit_pruning_number:
-                    path.append(
-                        [r, c]
-                    )  # Choose to prune r rows and c columns at this depth
-                    self.helper_for_find_row_col_pruning_combination(
-                        depth + 1,
-                        current_pruned + pruned_by_this_choice,
-                        upper_limit_pruning_number,
-                        lower_limit_pruning_number,
-                        max_depth,
-                        row_elements,
-                        col_elements,
-                        active_rows,
-                        active_cols,
-                        path,
-                        results,
-                        pruning_order,
-                    )
-                    path.pop()  # Backtrack
-
-    def find_all_pruning_combinations(
-        self,
-        max_depth: int,  # Should be p*q total loading orders
-        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
-        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
-        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
-        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
-        target_pruned: int,  # The total number would be pruned off by the target, expect the number from num_remove
-        pruning_order: str = "col_row",  # Either "col_row" pruning order or "row_col" pruning order
-        range_percentage: float = 0.1,  # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
-    ):
-
-        results = []
-        stack = [(0, 0, [])]  # (current depth, current pruned, path)
-
-        upper_limit_pruning_number = int(
-            round(target_pruned + target_pruned * range_percentage)
-        )
-        lower_limit_pruning_number = int(
-            round(target_pruned - target_pruned * range_percentage)
-        )
-
-        if DEBUG:
-            print("Upper limit:", upper_limit_pruning_number)
-            print("Lower limit:", lower_limit_pruning_number)
-
-        while stack:
-            depth, current_pruned, path = stack.pop()
-
-            if (
-                lower_limit_pruning_number
-                <= current_pruned
-                <= upper_limit_pruning_number
-            ):
-                results.append(path.copy())
-                continue
-
-            if current_pruned > upper_limit_pruning_number or depth == max_depth:
-                continue
-
-            for r in range(active_rows[depth] + 1):
-                for c in range(active_cols[depth] + 1):
-                    pruned_by_this_choice = self.calculate_pruned_elements(
-                        row_elements[depth].item(),
-                        col_elements[depth].item(),
-                        r,
-                        c,
-                        pruning_order,
-                    )
-                    new_pruned = current_pruned + pruned_by_this_choice
-                    if new_pruned <= upper_limit_pruning_number:
-                        stack.append((depth + 1, new_pruned, path + [[r, c]]))
-
-        return results
-        # self.helper_for_find_row_col_pruning_combination(
-        #     0,
-        #     0,
-        #     upper_limit_pruning_number,
-        #     lower_limit_pruning_number,
-        #     max_depth,
-        #     row_elements,
-        #     col_elements,
-        #     active_rows,
-        #     active_cols,
-        #     [],
-        #     results,
-        #     pruning_order)
-
-        return results
-
-    # def find_all_interleave_pattern(self, k: int, ):
-
-    def find_all_pruning_combinations_dp(
-        self,
-        max_depth: int,  # Should be p*q total loading orders
-        row_elements: Tensor,  # Number of elements would be turned off by one row; [depth] shape is expected
-        col_elements: Tensor,  # Number of elements would be turned off by one col; [depth] shape is expected
-        active_rows: Tensor,  # Number of rows are on in the current mask; [depth] shape is expectd
-        active_cols: Tensor,  # Number of cols are on in the current mask; [depth] shape is expectd
-        target_pruned: int,  # The total number would be pruned off by the target, expect the number from num_remove
-        range_percentage: float = 0.1,  # Set a range between for the target_pruned, (target_pruned +- range_percentage * target_pruned)
-    ):
-
-        upper_limit = int(target_pruned * (1 + range_percentage))
-        lower_limit = int(target_pruned * (1 - range_percentage))
-
-        dp = [{} for _ in range(max_depth + 1)]
-        dp[0][0] = [[]]  # Starting point: no pruning at depth 0
-
-        for depth in range(max_depth):
-            for pruned_so_far, paths in dp[depth].items():
-                for r in range(active_rows[depth].item() + 1):
-                    for c in range(active_cols[depth].item() + 1):
-                        pruned_by_this = self.calculate_pruned_elements(
-                            row_elements[depth].item(), col_elements[depth].item(), r, c
-                        )
-
-                        new_pruned = pruned_so_far + pruned_by_this
-                        if new_pruned <= upper_limit:
-                            if new_pruned not in dp[depth + 1]:
-                                dp[depth + 1][new_pruned] = []
-                            # Add new paths to the dp structure
-                            for path in paths:
-                                dp[depth + 1][new_pruned].append(path + [[r, c]])
-
-        # Collect all valid paths
-        results = []
-        for pruned_count, paths in dp[max_depth].items():
-            if lower_limit <= pruned_count <= upper_limit:
-                results.extend(paths)
-
-        return results
 
     def row_col_magnitude_select(
         self,
@@ -2309,55 +1839,14 @@ class DSTScheduler2(nn.Module):
     ) -> MultiMask:
 
         p, q, r, c, k1, k2 = weight.shape
-        
-        # print(death)
-        # layer_required_desntiy = self.density_dict[name]
-        
 
         if death:
             col_turn_off_elements = mask["row_mask"].sum([2, 4]).flatten() # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
-            # row_turn_off_average = mask["col_mask"].sum([3, 5]).float().mean().item()
         else:
             col_turn_off_elements = (~mask["row_mask"]).sum([2, 4]).flatten() # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
-            # row_turn_off_average = (~mask["col_mask"]).sum([3, 5]).float().mean().item()
 
-        # if death:
-        #     # Get full mask
-        #     full_mask = mask.data
-        #     # print(full_mask)
-
-        # else:
-        #     full_mask = mask.data
-        #     full_mask = ~full_mask
-
-        # full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(
-        #     p * q, r * k1, c * k2
-        # )
-        # col_turn_off = torch.sum(
-        #     full_mask_reshape, dim=1
-        # )  # Sum over k1, result is (depth, k2)
-
-        # row_turn_off = torch.sum(
-        #     full_mask_reshape, dim=2
-        # )  # Sum over k2, result is (depth, k1)
-
-        # # For each slides,
-        # # Number of elements turned off by one column; [depth] shape
-        # col_turn_off_elements = torch.max(col_turn_off, dim=1)[0]
-
-        # # For each slides,
-        # # Number of elements turned off by one row; [depth] shape
-        # row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
-
-        # col_turn_off_average = (
-        #     col_turn_off_elements.sum().divide(col_turn_off_elements.shape[0]).item()
-        # )
-
-        # row_turn_off_average = (
-        #     row_turn_off_elements.sum().divide(row_turn_off_elements.shape[0]).item()
-        # )
 
         col_total_required_elements = (
             self.HDAC_power / (self.ADC_power + self.TIA_power + self.HDAC_power)
@@ -2380,7 +1869,7 @@ class DSTScheduler2(nn.Module):
 
         if real_turned_off_by_col > 0:
             
-            logger.info(f"Now dealing with rows")
+            logger.info("Now dealing with rows")
             row_total_required_elements = num_select - real_turned_off_by_col
             row_required_weight = weight.data * mask_temp
             
@@ -2399,331 +1888,8 @@ class DSTScheduler2(nn.Module):
                 num_select=row_total_required_elements,
             )
 
-
-        # num select - Remaining for next round 
-        # if death:
-        #     remaining = num_select - (mask.numel() - mask_temp.numel())
-
-        # else:
-        #     remaining = num_select + (mask.numel() - mask_temp.numel())
-
         return mask_temp
 
-    def row_col_magnitude_select_old(
-        self,
-        mask: MultiMask,
-        weight: Tensor,
-        name: str,
-        death: bool = True,
-        num_select: int = 0,
-    ) -> MultiMask:
-
-        p, q, r, c, k1, k2 = weight.shape
-
-        # print(death)
-        if death:
-            # Get full mask
-            full_mask = mask.data
-            # print(full_mask)
-
-        else:
-            full_mask = mask.data
-            full_mask = ~full_mask
-        # Reshape the mask into the proper number of slides, each slides the k1' and k2'
-        # Easy to calculate each column or row can turn off how many elements based on curretn situation
-        full_mask_reshape = full_mask.permute(0, 1, 2, 4, 3, 5).reshape(
-            p * q, r * k1, c * k2
-        )
-
-        # row_magnitude = weight.data.norm(p=2, dim=(3, 5)) # [p,q,r,k1]
-        # col_magnitude = weight.data.norm(p=2, dim=(2, 4)) # [p,q,c,k2]
-        # row_magnitude_flat = row_magnitude.flatten() # [pqrk1]
-        # col_magnitude_flat = col_magnitude.flatten() # [pqck2]
-        # total_mag = torch.cat([row_magnitude, col_magnitude], 0) # [pqrk1 + pqck2]
-        # sorted_mag, sorted_idx = torch.sort(total_mag)
-        # percent = 0.6
-        # sorted_idx = sorted_idx[:int(percent * sorted_idx.shape[0])]
-        # sorted_idx_row = torch.unravel_index(sorted_idx[sorted_idx < row_magnitude_flat.numel()], row_magnitude.shape) # [p,q,r,k1]
-        # sorted_idx_col = torch.unravel_index(sorted_idx[sorted_idx >= row_magnitude_flat.numel()], col_magnitude.shape) # [p,q,c,k2]
-
-        # Row magnitude average
-        # Col magnitude average
-
-        col_turn_off = torch.sum(
-            full_mask_reshape, dim=1
-        )  # Sum over k1, result is (depth, k2)
-        row_turn_off = torch.sum(
-            full_mask_reshape, dim=2
-        )  # Sum over k2, result is (depth, k1)
-
-        # For each slides,
-        # Number of elements turned off by one column; [depth] shape
-        col_turn_off_elements = torch.max(col_turn_off, dim=1)[0]
-
-        # For each slides,
-        # Number of elements turned off by one row; [depth] shape
-        row_turn_off_elements = torch.max(row_turn_off, dim=1)[0]
-
-        # For each slides,
-        # Number of columns can be turned off; [depth] shape
-        col_on_number = torch.sum(mask["col_mask"].reshape(p * q, c * k2), dim=-1)
-        # For each slides,
-        # Number of rows can be turned off; [depth] shape
-        row_on_number = torch.sum(mask["row_mask"].reshape(p * q, r * k1), dim=-1)
-        # print("number of elements turned off by row:", row_turn_off_elements)
-        # print("number of elements turned off by col:", col_turn_off_elements)
-        # print("Turning on rows:", row_on_number)
-        # print("Turning on cols:", col_on_number)
-
-        # [Number of different combinations, loading sequece(p*q), 2(row col turning off combination)]
-        results = torch.tensor(
-            self.find_all_pruning_combinations_dp(
-                max_depth=p * q,
-                row_elements=row_turn_off_elements,
-                col_elements=col_turn_off_elements,
-                active_rows=row_on_number,
-                active_cols=col_on_number,
-                target_pruned=num_select,
-                range_percentage=0.2,
-            ),
-            dtype=torch.float32,
-            device=self.device,
-        )
-
-        if results.shape[0] == 0:
-            return mask
-
-        # All [pq]
-        row_wise_magnitude = weight.data.norm(p=2, dim=(3, 5)).reshape(p * q, r * k1)
-        row_wise_magnitude = row_wise_magnitude.sum(-1) / (r * k1)
-        col_wise_magnitude = weight.data.norm(p=2, dim=(2, 4)).reshape(p * q, c * k2)
-        col_wise_magnitude = col_wise_magnitude.sum(-1) / (c * k2)
-
-        print(row_wise_magnitude.shape)
-        print(col_wise_magnitude.shape)
-        print(results.shape)
-
-        ## [NC, P*Q] x [P*Q] + [NC, P*Q] x [P*Q] = [NC]
-        result_mag = results.sum(dim=-1).matmul(row_wise_magnitude) + results.sum(
-            dim=-1
-        ).matmul(col_wise_magnitude)
-
-        # exit(0)
-        # block_wise_magnitude = weight.data.norm(p=2, dim=(2, 3, 4, 5)).flatten()
-
-        # # [NC, P*Q] x [P*Q] = [NC]
-        # # print(results.cpu().numpy().tolist())
-        # result_mag = results.sum(dim=-1).matmul(block_wise_magnitude)
-        # print(results.shape)
-        # exit(0)
-        # # First filter 2 times max combination
-        # # Rough filter
-        results = results[torch.argsort(result_mag)[: self.max_combinations * 5]].int()
-        # print(results.cpu().numpy().tolist())
-        # exit(0)
-        # results = results.int()
-
-        if self.group == "layer":  # sort col magnitude per layer
-            col_magnitude = weight.data.norm(
-                p=2, dim=(2, 4), keepdim=True
-            ).square_()  # [p, q, 1, c, 1, k2]
-            # col_magnitude = weight.permute(0, 1, 2, 4, 3, 5).reshape(p*q, r*k1, c*k2).norm(p=2, dim=1)
-            # Shape [p*q, c*k2]
-            if death:
-                col_magnitude[~mask["col_mask"]] = 1e8
-            else:
-                col_magnitude[mask["col_mask"]] = -1
-
-            # [p*q, c*k2]
-            col_magnitude = col_magnitude.reshape(p * q, c * k2)
-            # Now the shape is [Number of slides(p*q), columns(c*k2)]
-
-            # [p*q, c*k2]
-            _, col_indices = torch.sort(
-                col_magnitude, dim=-1, descending=False if death else True
-            )
-            # if DEBUG:
-            # print("This is col_indices:", col_indices)
-            # print("Col indices shape:", col_indices.shape)
-
-            output_masks = []
-            for i in range(results.shape[0]):  # [p*q, c*k2]
-                # col_temp_mask = torch.zeros_like(col_indices, dtype=torch.bool)
-                # for j in range(p * q):
-                #     # print("col_indices shape:", col_indices.shape)
-                #     # print("col temp mask shape:", col_temp_mask.shape)
-                #     num = results[
-                #         i, j, 1
-                #     ].item()  # Curent combinnation, current slide, column turning off number
-                #     # print(j, num)
-                #     # print("These are the indices:", col_indices[j, : num])
-                #     col_temp_mask[j, col_indices[j, :num]] = True
-                # [p*q]
-                num_ones = results[i, :, 1]
-                # if torch.any(num_ones > 1):
-                #     print(num_ones)
-                #     exit(0)
-                # [p*q]
-                num_zeros = c * k2 - num_ones
-                # [p*q*2]
-                num_ones_zeros = torch.stack([num_ones, num_zeros], -1).flatten()
-                col_temp_mask = torch.repeat_interleave(
-                    torch.stack(
-                        [
-                            torch.ones(p * q, device=self.device, dtype=torch.bool),
-                            torch.zeros(p * q, device=self.device, dtype=torch.bool),
-                        ],
-                        -1,
-                    ).flatten(),
-                    num_ones_zeros,
-                ).reshape(p * q, c * k2)
-                col_temp_mask[
-                    torch.arange(p * q)[..., None].expand(-1, c * k2), col_indices
-                ] = col_temp_mask.clone()
-                # print("col_indices:", col_indices)
-                # print("num ones:", num_ones)
-                # print("col temp mask:", col_temp_mask)
-                # print(col_temp_mask)
-                col_mags_sum = col_magnitude[col_temp_mask].sum()
-                # [p, q, r, c, k1, k2] * [p, q, 1, c, 1, k2]
-                # [p, q, r, 1, k1, 1]
-
-                pruned_row_magnitude = (
-                    (weight.data * col_temp_mask.reshape(p, q, 1, c, 1, k2))
-                    .norm(p=2, dim=(3, 5), keepdim=True)
-                    .square_()
-                )
-
-                if death:
-                    pruned_row_magnitude[~mask["row_mask"]] = 1e8
-                else:
-                    pruned_row_magnitude[mask["row_mask"]] = -1
-
-                # [p*q, r*k1]
-                pruned_row_magnitude = pruned_row_magnitude.reshape(p * q, r * k1)
-
-                # [p*q, r*k1]
-                _, row_indices = torch.sort(
-                    pruned_row_magnitude, dim=-1, descending=False if death else True
-                )
-
-                # print("row_indices shape:", row_indices.shape)
-
-                # row_temp_mask = torch.zeros_like(row_indices, dtype=torch.bool)
-
-                # print("row_tem mask shape:", row_temp_mask.shape)
-
-                # for z in range(p * q):
-
-                #     num = results[
-                #         i, z, 0
-                #     ].item()  # Curent combinnation, current slide, row turning off number
-                #     # Access current slide's which row to be turned on
-                #     row_temp_mask[z, row_indices[z, :num]] = True
-                row_temp_mask = torch.repeat_interleave(
-                    torch.stack(
-                        [
-                            torch.ones(p * q, device=self.device, dtype=torch.bool),
-                            torch.zeros(p * q, device=self.device, dtype=torch.bool),
-                        ],
-                        -1,
-                    ).flatten(),
-                    num_ones_zeros,
-                ).reshape(p * q, r * k1)
-                row_temp_mask[
-                    torch.arange(p * q)[..., None].expand(-1, r * k1), row_indices
-                ] = row_temp_mask.clone()
-                row_mags_sum = pruned_row_magnitude[row_temp_mask].sum()
-                # print("row_indices:", row_indices)
-                ## True: selected, False: not selected
-                col_temp_mask = col_temp_mask.reshape(p, q, 1, c, 1, k2)
-                row_temp_mask = row_temp_mask.reshape(p, q, r, 1, k1, 1)
-
-                # new_combo_mask = MultiMask(
-                #     {"row_mask": [p, q, r, 1, k1, 1], "col_mask": [p, q, 1, c, 1, k2]}
-                # )
-                # new_combo_mask["row_mask"] = row_temp_mask
-                # new_combo_mask["col_mask"] = col_temp_mask
-                ## TODO: row_temp_mask
-                output_mask = MultiMask(
-                    {
-                        "row_mask": (
-                            (mask["row_mask"] & ~row_temp_mask)
-                            if death
-                            else (mask["row_mask"] | row_temp_mask)
-                        ),
-                        "col_mask": (
-                            (mask["col_mask"] & ~col_temp_mask)
-                            if death
-                            else (mask["col_mask"] | col_temp_mask)
-                        ),
-                    }
-                )
-                output_masks.append(
-                    (
-                        (row_mags_sum + col_mags_sum).item(),
-                        output_mask,
-                    )
-                )
-
-            ## [max_comb, multimask]
-            output_masks = [m[1] for m in sorted(output_masks, key=lambda x: x[0])][
-                : self.max_combinations
-            ]
-
-            opts = self.death_opts if death else self.growth_opts
-
-            def obj_fn(opt: str, mask: MultiMask) -> float:
-                if opt == "crosstalk":
-                    gain = (
-                        (
-                            self.calc_crosstalk_scores(mask["col_mask"], is_col=True)
-                            + self.calc_crosstalk_scores(
-                                mask["row_mask"][..., 0], is_col=False
-                            )
-                        )
-                        .sum()
-                        .item()
-                    )
-
-                elif opt == "power":
-                    gain = -self.get_power_from_mask(mask)[0]
-                else:
-                    raise NotImplementedError
-                return gain  # higher the better
-
-            for opt in opts:
-                best_score = float("-inf")
-                selected_masks = []
-                for mask_temp in output_masks:
-                    score = obj_fn(opt, mask_temp)
-                    # print(score)
-                    # print(mask_temp.data)
-                    if score > best_score:
-                        selected_masks = [mask_temp]
-                        best_score = score
-                    elif score == best_score:
-                        selected_masks.append(mask_temp)
-                output_masks = selected_masks
-
-        if DEBUG:
-            print(full_mask)
-            print(full_mask.permute(0, 1, 2, 4, 3, 5).reshape(p * q, r * k1, c * k2))
-            print("Total number need to be pruned:", num_select)
-            print("number of elements turned off by row:", row_turn_off_elements)
-            print("number of elements turned off by col:", col_turn_off_elements)
-            print("Turning on rows:", row_on_number)
-            print("Turning on cols:", col_on_number)
-            # print("Reshaped col magnitude:", col_magnitude)
-            # print("And its shape:", col_magnitude.shape)
-            # print("Length of the results:", type(results[0]))
-            # print("Pairs of each P, Q loading sequence, number of elements turned off by one column and by one row under current state:", col_row_possible_turned_off_elements_number_pairs)
-            # print("Pairs of each P, Q loading sequence, number of columns and rows on under current state:", current_on_col_row_number_pairs)
-            print("Possible combinations:", results)
-            print("And it's shape:", results.shape)
-        # max_num_col_selected = int(round(num_select / (r * k1)))
-
-        return output_masks[0]
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
@@ -2766,8 +1932,6 @@ class DSTScheduler2(nn.Module):
         
         total_element = mask.data.numel()
 
-
-        # row_turn_off_number = int(round((total_element - total_element * sparsity) / (c * k2) / (p * q)))
         row_turn_off_number = int(round(r * k1 * (1 - sparsity)))
         row_interleave_index = torch.tensor(list(range(0, r*k1, 2)) + list(range(1, r*k1, 2)))[:row_turn_off_number]
 
@@ -2779,10 +1943,7 @@ class DSTScheduler2(nn.Module):
         col_mask[k2 - col_interleave_index - 1] = 0
         row_mask = row_mask.reshape(r, 1, k1, 1).expand(p, q, -1, -1, -1, -1)
         col_mask = col_mask.reshape(1, c, 1, k2).expand(p, q, -1, -1, -1, -1)
-        # if is_col:
-        #     mask["col_mask"] = col_mask.to(device)
-        # else:
-        #     mask["row_mask"] = row_mask.to(device)
+
         return col_mask.to(device) if is_col else row_mask.to(device)
 
     def get_gradient_for_weights(self, weight):
@@ -2877,51 +2038,6 @@ class DSTScheduler2(nn.Module):
             total_crosstalk += crosstalk
 
         return total_crosstalk, crosstalks
-
-    def plot_mask(self, filename: str, save_fig=False):
-        num_masks = len(self.masks)
-        fig, axes = plt.subplots(3, num_masks, figsize=(4 * num_masks, 10))
-        if num_masks == 1:
-            axes = [[ax] for ax in axes]
-        total_power, powers = self.get_total_power()
-        total_crosstalk, crosstalks = self.get_total_crosstalk()
-        for i, (name, mask) in enumerate(self.masks.items()):
-            k1, k2 = mask["row_mask"].shape[-2], mask["col_mask"].shape[-1]
-            mask = mask.data.permute(0, 2, 4, 1, 3, 5).flatten(0, 2).flatten(1)
-            axes[0][i].imshow(mask.data.cpu().numpy(), cmap="gray")
-            axes[0][i].set_title(
-                name
-                + " Mask"
-                + f"\nTotal Power {total_power:.2f}, Total Crosstalk {total_crosstalk:.3f}"
-            )
-
-            weight = (
-                self.params[name]
-                .data.permute(0, 2, 4, 1, 3, 5)
-                .flatten(0, 2)
-                .flatten(1)
-            )
-            axes[1][i].imshow(weight.data.abs().cpu().numpy(), cmap="gray")
-            axes[1][i].set_title(name + " abs(Weight)")
-
-            grad = (
-                self.params[name]
-                .grad.permute(0, 2, 4, 1, 3, 5)
-                .flatten(0, 2)
-                .flatten(1)
-            )
-            axes[2][i].imshow(grad.data.abs().cpu().numpy(), cmap="gray")
-            axes[2][i].set_title(name + " abs(Grad)")
-
-            for j in range(len(axes)):
-                for y in np.arange(-0.5, mask.shape[0] - 0.4, k1):
-                    axes[j][i].plot([-0.5, mask.shape[1] - 0.5], [y, y], "b")
-                for x in np.arange(-0.5, mask.shape[1] - 0.4, k2):
-                    axes[j][i].plot([x, x], [-0.5, mask.shape[0] - 0.5], "b")
-
-        if save_fig:
-            ensure_dir("./unitest/figs")
-            plt.savefig(f"./unitest/figs/{filename}.png", dpi=300)
 
     def update_fired_masks(self, pruning_type="unstructure"):
         if pruning_type in {"unstructure", "structure"}:

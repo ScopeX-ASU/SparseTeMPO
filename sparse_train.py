@@ -2,10 +2,9 @@
 # coding=UTF-8
 import argparse
 import os
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, Optional
 
 import mlflow
-import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -23,7 +22,7 @@ from pyutils.torch_train import (
 from pyutils.typing import Criterion, DataLoader, Optimizer, Scheduler
 
 from core import builder
-from core.datasets.mixup import Mixup, MixupAll
+from core.datasets.mixup import MixupAll
 from core.utils import get_parameter_group, register_hidden_hooks
 
 
@@ -46,7 +45,6 @@ def train(
 
     class_meter = AverageMeter("ce")
     aux_meters = {name: AverageMeter(name) for name in aux_criterions}
-    aux_output_weight = getattr(configs.criterion, "aux_output_weight", 0)
 
     data_counter = 0
     correct = 0
@@ -252,7 +250,7 @@ def main() -> None:
         device = torch.device("cpu")
         torch.backends.cudnn.benchmark = False
 
-    if int(configs.run.deterministic) == True:
+    if bool(configs.run.deterministic):
         set_torch_deterministic()
 
     train_loader, validation_loader, test_loader = builder.make_dataloader(
@@ -305,7 +303,7 @@ def main() -> None:
         register_hidden_hooks(model)
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
         print(len([m for m in teacher.modules() if hasattr(m, "_recorded_hidden")]))
-        print(f"Register hidden state hooks for teacher and students")
+        print("Register hidden state hooks for teacher and students")
 
     if configs.dst_scheduler == "None":
         configs.dst_scheduler = None
@@ -485,24 +483,6 @@ def main() -> None:
                     save_model=False,
                     print_msg=True,
                 )
-
-            # model.set_noise_flag(True)
-            # model.set_crosstalk_noise(True)
-            
-            # test(
-            #     model,
-            #     test_loader,
-            #     epoch,
-            #     criterion,
-            #     [],
-            #     [],
-            #     device,
-            #     mixup_fn=test_mixup_fn,
-            #     fp16=grad_scaler._enabled,
-            # )
-
-            # model.set_noise_flag(False)
-            # model.set_crosstalk_noise(False)
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")
