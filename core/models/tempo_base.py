@@ -13,7 +13,6 @@ import numpy as np
 import torch
 from mmcv.cnn.bricks import build_activation_layer, build_conv_layer, build_norm_layer
 from mmengine.registry import MODELS
-from pyutils.general import logger
 from pyutils.torch_train import set_torch_deterministic
 from torch import Tensor, nn  # , set_deterministic
 from torch.types import Device, _size

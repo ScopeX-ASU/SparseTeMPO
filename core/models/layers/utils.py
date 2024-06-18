@@ -453,6 +453,7 @@ class MZIPowerEvaluator(object):
             distances.append(distance)
         # print(power)
         # print(delta_phases)
+        ideal_distance = distances.pop(-1)
         ideal_delta_phases = delta_phases.pop(-1)
         # ideal_distance = distances[-1]
         # ideal_delta_phases = delta_phases[-1]
@@ -462,9 +463,6 @@ class MZIPowerEvaluator(object):
             delta_phases[i] = np.minimum(
                 np.maximum(delta_phases[i - 1], delta_phases[i]), ideal_delta_phases
             )
-        print(np.concatenate(delta_phases, 0).shape)
-        print(np.concatenate(distances, 0).shape)
-        exit(0)
         X_data = np.stack(
             [np.concatenate(delta_phases, 0), np.concatenate(distances, 0)], -1
         )

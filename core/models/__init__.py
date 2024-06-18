@@ -11,3 +11,4 @@ from .tempo_vgg import *
 from .tempo_resnet import *
 from .layers import *
 from .dst2 import DSTScheduler2
+from .dst2 import CosineDecay
