@@ -6,14 +6,13 @@ LastEditors: Jiaqi Gu (jqgu@utexas.edu)
 LastEditTime: 2021-06-06 23:37:55
 """
 
-from ast import Not
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from mmengine.registry import MODELS
-from pyutils.general import logger, print_stat
+from pyutils.general import logger
 from pyutils.quant.lsq import ActQuantizer_LSQ
 from torch import Tensor, nn
 from torch.nn import Parameter
@@ -23,7 +22,6 @@ from .base_layer import ONNBaseLayer
 from .utils import (
     CrosstalkScheduler,
     PhaseVariationScheduler,
-    SparsityEnergyScheduler,
     WeightQuantizer_LSQ,
     merge_chunks,
 )
@@ -63,7 +61,6 @@ class TeMPOBlockLinear(ONNBaseLayer):
         in_bit: int = 32,
         phase_variation_scheduler: PhaseVariationScheduler = None,
         crosstalk_scheduler: CrosstalkScheduler = None,
-        switch_power_scheduler: SparsityEnergyScheduler = None,
         device: Device = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         ),
@@ -126,13 +123,11 @@ class TeMPOBlockLinear(ONNBaseLayer):
         self.set_output_noise(0)
         self.set_enable_ste(False)
         self.set_noise_flag(False)
-        self.set_enable_remap(False)
         self.set_light_redist(False)
         self.set_input_power_gating(False, ER=6)
         self.set_output_power_gating(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
-        self.switch_power_scheduler = switch_power_scheduler
 
         if bias:
             self.bias = Parameter(torch.Tensor(out_features).to(self.device))
@@ -179,10 +174,6 @@ class TeMPOBlockLinear(ONNBaseLayer):
 
         return instance
 
-    def MAC(self) -> int:
-        # MAC for single-batch inference
-        MAC = self.in_features_pad * self.out_features_pad
-        return MAC
 
     def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
         bs = x_size[0]
@@ -232,5 +223,5 @@ class TeMPOBlockLinear(ONNBaseLayer):
         if hasattr(self, "col_prune_mask") and self.col_prune_mask is not None:
             s += f", col_mask={self.col_prune_mask.shape}"
         if hasattr(self, "prune_mask") and self.prune_mask is not None:
-            s += f", prune_mask=True"
+            s += ", prune_mask=True"
         return s

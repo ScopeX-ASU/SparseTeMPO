@@ -6,12 +6,10 @@ LastEditors: Jiaqi Gu (jqgu@utexas.edu)
 LastEditTime: 2021-10-24 16:24:50
 """
 
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Union
 
-import numpy as np
 import torch
 import torch.nn.functional as F
-from pyutils.general import logger
 from torch import Tensor, nn
 from torch.nn.modules.activation import ReLU
 from torch.types import Device, _size
@@ -343,6 +341,8 @@ class ResNet(TeMPO_Base):
         self.drop_masks = None
 
         self.reset_parameters()
+        self.set_phase_variation(False)
+        self.set_crosstalk_noise(False)
         self.gamma_noise_std = 0
         self.crosstalk_factor = 0
         self.set_weight_noise(0.0)

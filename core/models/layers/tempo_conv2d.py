@@ -6,13 +6,13 @@ LastEditors: Jiaqi Gu (jqgu@utexas.edu)
 LastEditTime: 2021-06-06 23:37:55
 """
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from mmengine.registry import MODELS
-from pyutils.general import logger, print_stat
+from pyutils.general import logger
 from pyutils.quant.lsq import ActQuantizer_LSQ
 from torch import Tensor, nn
 from torch.nn import Parameter
@@ -23,7 +23,6 @@ from .base_layer import ONNBaseLayer
 from .utils import (
     CrosstalkScheduler,
     PhaseVariationScheduler,
-    SparsityEnergyScheduler,
     WeightQuantizer_LSQ,
     merge_chunks,
 )
@@ -87,7 +86,6 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         in_bit: int = 32,
         phase_variation_scheduler: PhaseVariationScheduler = None,
         crosstalk_scheduler: CrosstalkScheduler = None,
-        switch_power_scheduler: SparsityEnergyScheduler = None,
         device: Device = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         ),
@@ -156,19 +154,16 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         self.disable_fast_forward()
         ### default set no phase variation
         self.set_phase_variation(False)
-        self.set_global_temp_drift(False)
         self.set_crosstalk_noise(False)
         self.set_weight_noise(0)
         self.set_output_noise(0)
         self.set_enable_ste(False)
         self.set_noise_flag(False)
-        self.set_enable_remap(False)
         self.set_light_redist(False)
         self.set_input_power_gating(False, ER=6)
         self.set_output_power_gating(False)
         self.phase_variation_scheduler = phase_variation_scheduler
         self.crosstalk_scheduler = crosstalk_scheduler
-        self.switch_power_scheduler = switch_power_scheduler
 
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels).to(self.device))
@@ -224,18 +219,6 @@ class TeMPOBlockConv2d(ONNBaseLayer):
 
         return instance
 
-    def MAC(self, x: Tensor) -> int:
-        input_H, input_W = x.size(0), x.size(1)
-        output_H = ((input_H - self.kernel_size + 2 * self.padding) // self.stride) + 1
-        output_W = ((input_W - self.kernel_size + 2 * self.padding) // self.stride) + 1
-        MAC = (
-            self.in_channels_pad
-            * self.out_channels_pad
-            * self.kernel_size**2
-            * output_H
-            * output_W
-        )
-        return MAC
 
     def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
         bs, input_H, input_W = x_size[0], x_size[-2], x_size[-1]
@@ -337,11 +320,6 @@ class TeMPOBlockConv2d(ONNBaseLayer):
                 groups=self.groups,
             )
             xs.append(out)
-        # print("Compare NMAE for activation")
-        # print("Noisy weight",(weight_ideal-weight_noisy).norm(1) / weight_ideal.norm(1))
-        # print("Noisy activation",(xs[1]-xs[0]).norm(1) / xs[0].norm(1))
-        # print("Noisy OG weight", (weight_ideal-weight_noisy_og).norm(1) / weight_ideal.norm(1))
-        # print("Noisy OG activation", (xs[2]-xs[0]).norm(1) / xs[0].norm(1))
         x = xs[1] * 0.5 + xs[0] * 0.5
         if self._noise_flag:
             x = self._add_output_noise(x)
@@ -371,5 +349,5 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         if hasattr(self, "col_prune_mask") and self.col_prune_mask is not None:
             s += f", col_mask={self.col_prune_mask.shape}"
         if hasattr(self, "prune_mask") and self.prune_mask is not None:
-            s += f", prune_mask=True"
+            s += ", prune_mask=True"
         return s

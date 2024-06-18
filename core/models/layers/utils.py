@@ -7,32 +7,24 @@ LastEditTime: 2023-10-04 16:30:46
 """
 
 import os
-import random
 import sys
-from functools import lru_cache
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Tuple
 
 import einops
 import numpy as np
 import pandas as pd
 import torch
-import tqdm
 from pyutils.compute import (
-    gen_boolean_mask,
     gen_gaussian_filter2d,
-    gen_gaussian_noise,
     merge_chunks,
     partition_chunks,
 )
 from pyutils.general import logger
 from pyutils.quant.lsq import get_default_kwargs_q, grad_scale, round_pass
-from pyutils.torch_train import set_torch_deterministic
 from scipy.interpolate import LinearNDInterpolator
 from torch import Tensor, nn
 from torch.nn import Parameter
-from torch.types import Device, _size
-import numpy as np
-import math
+from torch.types import _size
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../.."))
 
@@ -42,14 +34,9 @@ __all__ = [
     "mzi_out_diff_to_phase",
     "mzi_phase_to_out_diff",
     "PhaseVariationScheduler",
-    "GlobalTemperatureScheduler",
     "CrosstalkScheduler",
-    "DeterministicCtx",
-    "calculate_grad_hessian",
     "merge_chunks",
     "partition_chunks",
-    "pad_quantize_fn",
-    "hard_diff_round",
 ]
 
 DEBUG = False
@@ -205,7 +192,7 @@ class PhaseVariationScheduler(object):
         self.smoothing_kernel_size = smoothing_kernel_size
         assert (
             smoothing_kernel_size == 0 or smoothing_kernel_size % 2 == 1
-        ), f"Must have 0 or odd size of kernel"
+        ), "Must have 0 or odd size of kernel"
         self.smoothing_factor = smoothing_factor
         self.smoothing_mode = smoothing_mode
         self.momentum = momentum
@@ -388,7 +375,7 @@ class PhaseVariationScheduler(object):
                 self.momentum * self.noise_std_map + (1 - self.momentum) * noise_std_map
             )
 
-    def sample_noise(self, size=None, enable_remap: bool = False, col_ind=None):
+    def sample_noise(self, size=None):
         ## size [P, Q, k, k]: the workload size you want to map to this [R, C, K, K] multi-core MRR accelerator
         ## If size is None, then the workload is assumed to be [R, C, K, K]
         ## need to return [P, Q, k, k] phase noises for this workload
@@ -408,9 +395,7 @@ class PhaseVariationScheduler(object):
         noise_std_map = einops.repeat(
             self.noise_std_map, "r c k l-> u v r c k l", u=batch[0], v=batch[1]
         )
-        if enable_remap and col_ind is not None:
-            ## we remap noise distribution
-            noise_std_map = apply_remap_noise(noise_std_map, col_ind=col_ind)
+
         noise_std_map = (
             noise_std_map.permute(0, 2, 1, 3, 4, 5)
             .flatten(0, 1)
@@ -425,153 +410,12 @@ class PhaseVariationScheduler(object):
         # )  # n ~ N(0, noise_std_map^2) different device has different std
         self.noises = noises  ## add this to record the noise sampled.
         return noises
-
-
-class GlobalTemperatureScheduler(object):
-    def __init__(
-        self,
-        size=[4, 4, 8, 8],
-        T_max: int = 1000,  # total number of steps
-        n_g: float = 4.3,  # Bogaerts et al. 2012
-        n_eff: float = 1.89,  # Bogaerts et al. 2012, TM Mode
-        dwl_dT: float = 0.102,  # Bogaerts et al. 2012, TM Mode, d wavelength / d T. unit nm / K
-        schedule_fn: Callable = lambda: 300,  # a function that returns a temperature in K unit, bu default is room temp
-        T0: float = 300,  # initial room temperature
-        lambda_res: List | Tensor | np.ndarray = [],
-        L_list: List | Tensor | np.ndarray = [],
-        hotspot_mode: str = "uniform",
-        device="cuda:0",
-    ) -> None:
-        """
-        just gradually set global temperature based on schedule_fn
-        """
-        # std of the phase noise follows Gaussian distribution ~ N(noise_std_mean, noise_std_std^2)
-        super().__init__()
-        self.size = size
-        self.T_max = T_max
-        self.schedule_fn = schedule_fn
-        self.n_g = n_g
-        self.n_eff = n_eff
-        self.dwl_dT = dwl_dT
-        self.T0 = T0
-        self._last_T = T0
-        self.L_list = L_list
-        assert hotspot_mode in {"uniform", "corner"}
-        self.hotspot_mode = hotspot_mode
-        self.lambda_res = lambda_res
-        if isinstance(lambda_res, list):
-            self.lambda_res = torch.tensor(lambda_res, device=device)
-        elif isinstance(lambda_res, np.ndarray):
-            self.lambda_res = torch.from_numpy(lambda_res).to(device)
-
-        if self.lambda_res.device != device:
-            self.lambda_res = self.lambda_res.to(device)
-
-        if isinstance(L_list, list):
-            self.L_list = torch.tensor(L_list, device=device)
-        elif isinstance(L_list, np.ndarray):
-            self.L_list = torch.from_numpy(L_list).to(device)
-
-        if self.L_list.device != device:
-            self.L_list = self.L_list.to(device)
-
-        self.device = device
-        self.reset()
-
-    def reset(self) -> None:
-        self._step = 0
-        self.T = self.schedule_fn(0)
-
-    def step(self) -> None:
-        self._step += 1
-        self.T = self.schedule_fn(self._step / self.T_max)
-
-    def get_global_temp(self) -> float:
-        return self.T
-
-    def record_current_temp(self):
-        self._last_T = self.T
-
-    def get_hotspot_map(self) -> Tensor:
-        if self.hotspot_mode == "uniform":
-            hotspot_map = torch.ones(self.size[0:2], device=self.device)
-        elif self.hotspot_mode == "corner":
-            X, Y = torch.meshgrid(
-                torch.arange(self.size[0], device=self.device),
-                torch.arange(self.size[1], device=self.device),
-            )
-            hotspot_map = torch.exp(-1 * (X.square() + Y.square()).sqrt())
-        else:
-            raise NotImplementedError
-        return hotspot_map
-
-    def get_phase_drift(
-        self, phase, T, enable_remap: bool = False, col_ind=None
-    ) -> Tensor:
-        """
-        temperature drift will trigger lambda shift, i.e., delta_lambda, we assume lambda is linear to T, then
-        delta_lambda = delta_T * d lambda / dT
-
-        delta_lambda means there is a change on the neff, i.e., delta_neff
-        delta_neff = delta_lambda * n_g / lambda_res
-
-        the neff change leads to extra round-trip phase shift, e.g., delta_phi
-        delta_phi = delta_neff * 2pi * R / lambda_res * 2pi
-        The temperature change induced phase drift is only a function of T and wavelengths/Radius.
-        For this [R,C,K,K] MRR weight bank architecture, only K different wavelengths/Radius, T is global.
-        return delta_Phi [Tensor]: [K]-shaped tensor, each element is the phase drift for each wavelength/Radius.
-        This can be naturally broadcast to [P,Q,K,K] workload (corresponding to the last dimension).
-        """
-
-        n_g = self.n_g  # Bogaerts et al. 2012
-        n_eff = self.n_eff  # Bogaerts et al. 2012, TM Mode
-        # delta_lambda = (T - self.T0) * self.dwl_dT
-        hotspot_map = self.get_hotspot_map()[..., None, None]  # [R, C, 1, 1]
-        delta_T = (T - self.T0) * hotspot_map
-        delta_lambda = delta_T * self.dwl_dT  # [R, C, 1, 1]
-        K = phase.shape[-1]
-        lambda_res = self.lambda_res[
-            self.lambda_res.shape[0] // 2
-            - K // 2 : self.lambda_res.shape[0] // 2
-            - K // 2
-            + K
-        ]  # we only need k lambdas, so you need pass the central k wavelengths
-        L_list = self.L_list[
-            self.L_list.shape[0] // 2 - K // 2 : self.L_list.shape[0] // 2 - K // 2 + K
-        ]
-        delta_neff = delta_lambda * n_g / lambda_res  # [R, C, 1, k]
-        delta_Phi = delta_neff * L_list * 1000 / lambda_res * 2 * np.pi  # [R, C, 1, k]
-
-        size = phase.shape  # [P,Q,K,K]
-        batch = int(np.ceil(size[0] / self.size[0])), int(
-            np.ceil(size[1] / self.size[1])
-        )
-
-        # we assume the phase noise has zero mean, only std is determined by the noise_std_map
-        # the P, Q, K, K workload will be chunked into u-by-v chunks (with same padding), each chunk is R, C, K, K, and thus can be mapping to the arch.
-        # The u-by-v chunks require u-by-v times inference. The u-by-v inferences will see the same noise distribution, but different noise samples.
-        delta_Phi = einops.repeat(
-            delta_Phi, "r c k l-> u v r c k l", u=batch[0], v=batch[1]
-        )
-        if enable_remap and col_ind is not None:
-            ## we remap noise distribution
-            # print("here")
-            # print(col_ind)
-            # exit(0)
-            delta_Phi = apply_remap_noise(delta_Phi, col_ind=col_ind)
-        delta_Phi = (
-            delta_Phi.permute(0, 2, 1, 3, 4, 5)
-            .flatten(0, 1)
-            .flatten(1, 2)[: size[0], : size[1]]
-        )
-
-        return delta_Phi  # [P, Q, 1, k]
     
 
 class MZIPowerEvaluator(object):
     def __init__(
         self,
-        csv_file: str = "./unitest/MZIPower.csv",
+        csv_file: str = "./MZIdata/MZIPower.csv",
         interv_s: int = 10,
         ps_width: int = 6,
         device="cuda:0",
@@ -585,7 +429,7 @@ class MZIPowerEvaluator(object):
     def set_spacing(self, interv_s: int):
         self.interv_s = interv_s
 
-    def _fit_MZI_power_interp(self, csv_file: str = "./unitest/MZIPower.csv"):
+    def _fit_MZI_power_interp(self, csv_file: str = "./MZIdata/MZIPower.csv"):
         df = pd.read_csv(csv_file)
         # end = 22
         end = -5  # 7um at P_pi
@@ -609,7 +453,6 @@ class MZIPowerEvaluator(object):
             distances.append(distance)
         # print(power)
         # print(delta_phases)
-        ideal_distance = distances.pop(-1)
         ideal_delta_phases = delta_phases.pop(-1)
         # ideal_distance = distances[-1]
         # ideal_delta_phases = delta_phases[-1]
@@ -619,6 +462,9 @@ class MZIPowerEvaluator(object):
             delta_phases[i] = np.minimum(
                 np.maximum(delta_phases[i - 1], delta_phases[i]), ideal_delta_phases
             )
+        print(np.concatenate(delta_phases, 0).shape)
+        print(np.concatenate(distances, 0).shape)
+        exit(0)
         X_data = np.stack(
             [np.concatenate(delta_phases, 0), np.concatenate(distances, 0)], -1
         )
@@ -921,173 +767,6 @@ class CrosstalkScheduler(object):
         return power
 
 
-class DeterministicCtx:
-    def __init__(self, random_state: Optional[int] = None) -> None:
-        self.random_state = random_state
-
-    def __enter__(self):
-        self.random_state = random.getstate()
-        self.numpy_random_state = np.random.get_state()
-        self.torch_random_state = torch.random.get_rng_state()
-        self.torch_cuda_random_state = torch.cuda.get_rng_state()
-        set_torch_deterministic(self.random_state)
-        return self
-
-    def __exit__(self, *args):
-        random.setstate(self.random_state)
-        np.random.seed(self.numpy_random_state)
-        np.random.set_state(self.numpy_random_state)
-        torch.random.set_rng_state(self.torch_random_state)
-        torch.cuda.set_rng_state(self.torch_cuda_random_state)
-
-
-class SparsityEnergyScheduler(object):
-    def __init__(
-        self,
-        core_size: _size = [8, 8],  # This one should be the architecture core size
-        threshold: float = 0.2,
-        pi_shift_power: float = 30.0,
-        device="cuda:0",
-    ) -> None:
-        super().__init__()
-        self.height = core_size[0]
-        self.width = core_size[1]
-        self.node_number = core_size[0] * core_size[1]
-        self.pi_shift_power = pi_shift_power
-        self.threshold = threshold
-        self.device = device
-
-    def cal_sw_power(self, total_ports: int = 3, upper_ports: int = 1):
-        if total_ports == 0:
-            return 0
-        return (
-            torch.arccos((upper_ports / total_ports) ** 0.5)
-            * 2
-            / torch.pi
-            * self.pi_shift_power
-        )
-
-    def calculate_total_and_upper_ports(self, ports_array):
-
-        # Base case: If the array is empty or has one element, no power is needed.
-        if ports_array.shape[0] <= 1:
-            return 0
-
-        # Calculate the number of opening ports in the upper half.
-        mid_index = ports_array.shape[0] // 2
-        upper_open_ports = torch.sum(ports_array[:mid_index])
-
-        # Calculate the total number of opening ports.
-        total_open_ports = torch.sum(ports_array)
-
-        # Calculate the power needed for this level's switch.
-        power_for_this_switch = self.cal_sw_power(total_open_ports, upper_open_ports)
-
-        # Recursively calculate the power for the left and right halves.
-        left_power = self.calculate_total_and_upper_ports(ports_array[:mid_index])
-        right_power = self.calculate_total_and_upper_ports(ports_array[mid_index:])
-
-        # Sum the powers: current level's switch, left half, and right half.
-        total_power = power_for_this_switch + left_power + right_power
-
-        return total_power
-
-    def calculate_average_power(self, phase):
-        # Flatten the tensor and calculate total number of k x k slices needed
-        total_elements = phase.numel()
-
-        # Calculate required padding for uneven division
-        padding_needed = (
-            (self.node_number) - (total_elements % (self.node_number))
-            if total_elements % (self.node_number) != 0
-            else 0
-        )
-        padded_total_elements = total_elements + padding_needed
-        number_of_slices = padded_total_elements // (self.node_number)
-
-        phase_reshape = phase.flatten()
-        if padding_needed > 0:
-            phase_reshape = torch.cat(
-                [
-                    phase_reshape,
-                    torch.zeros(padding_needed, dtype=phase.dtype, device=self.device),
-                ]
-            )
-
-        phase_reshape = phase_reshape.reshape(number_of_slices, self.height, self.width)
-
-        average_power = 0
-        for i in range(phase_reshape.shape[0]):
-            # Check for non-empty rows in the slice
-            binary_mask = torch.any(phase_reshape[i] <= self.threshold, dim=1).int()
-            average_power += self.calculate_total_and_upper_ports(binary_mask)
-
-        return average_power / phase_reshape.shape[0]
-
-
-def calculate_grad_hessian(
-    model, train_loader, criterion, num_samples=10, device="cuda:0"
-):
-    ## average gradients and second order gradients will be stored in weight._first_grad and weight._second_grad
-    is_train = model.training
-    model.train()
-    ## freeze BN stat is important
-    bn_state = None
-    for m in model.modules():
-        if isinstance(m, torch.nn.BatchNorm2d):
-            bn_state = m.training
-            m.eval()
-    params = []
-    for m in model.modules():
-        if isinstance(m, model._conv_linear):
-            # print(m)
-            m.weight._first_grad = 0
-            m.weight._second_grad = 0
-            params.append(m.weight)
-    generator = torch.Generator(params[0].device).manual_seed(0)
-
-    for idx, (data, target) in enumerate(tqdm.tqdm(train_loader)):
-        data, target = data.to(device), target.to(device)
-        output = model(data)
-        loss = criterion(output, target)
-        loss.backward(create_graph=True)
-        ## record the gradient
-        grads = []
-        for p in params:
-            if p.grad is not None:
-                ## accumulate gradients and average across all batches
-                p._first_grad += p.grad.data / len(train_loader)
-                grads.append(p.grad)
-
-        # compute second order gradient
-        for _ in range(num_samples):
-            zs = [
-                torch.randint(0, 2, p.size(), generator=generator, device=p.device)
-                * 2.0
-                - 1.0
-                for p in params
-            ]  # Rademacher distribution {-1.0, 1.0}
-            h_zs = torch.autograd.grad(
-                grads,
-                params,
-                grad_outputs=zs,
-                only_inputs=True,
-                retain_graph=num_samples - 1,
-            )
-            for h_z, z, p in zip(h_zs, zs, params):
-                ## accumulate second order gradients
-                p._second_grad += h_z * z / (num_samples * len(train_loader))
-        model.zero_grad()
-        if idx == 3:
-            break
-    # print(params[0]._first_grad, params[0]._first_grad.shape)
-    # print(params[0]._second_grad, params[0]._second_grad.shape)
-    # print(params[0].shape)
-    for m in model.modules():
-        if isinstance(m, torch.nn.BatchNorm2d):
-            m.train(bn_state)
-    model.train(is_train)
-
 
 def merge_chunks(x: Tensor) -> Tensor:
     # x = [h1, w1, h2, w2, ...., hk, wk]
@@ -1213,115 +892,3 @@ class WeightQuantizer_LSQ(nn.Module):
             x = round_pass((x / alpha).clamp(self.Qn, self.Qp)).mul(alpha)
 
         return x
-
-
-def uniform_quantize(num_levels, gradient_clip=False):
-    class qfn(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, input):
-            # n = float(2 ** k - 1)
-            n = (
-                num_levels - 1
-            )  # explicit assign number of quantization level,e.g., k=5 or 8
-            out = torch.round(input * n) / n
-            return out
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            grad_input = grad_output.clone()
-            if gradient_clip:
-                grad_input.clamp_(-1, 1)
-            return grad_input
-
-    return qfn().apply
-
-
-class pad_quantize_fn(torch.nn.Module):
-    def __init__(self, w_bit, quant_ratio: float = 1.0, v_max: float = 2.0):
-        """Differentiable weight quantizer. Support different algorithms. Support Quant-Noise with partial quantization.
-
-        Args:
-            w_bit (int): quantization bitwidth
-            quant_ratio (float, optional): Quantization ratio to support full-precision gradient flow. Defaults to 1.0.
-            v_max (float, optional): Maxmimum voltage (exclusive).
-        """
-        super().__init__()
-
-        self.w_bit = w_bit  # w_bit is the number of quantization level, not bitwidth !
-
-        self.quant_ratio = quant_ratio
-        assert 0 <= quant_ratio <= 1, logger.error(
-            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
-        )
-        self.uniform_q = uniform_quantize(num_levels=w_bit, gradient_clip=True)
-        self.v_max = v_max
-
-    def set_quant_ratio(self, quant_ratio=None):
-        if quant_ratio is None:
-            ### get recommended value
-            quant_ratio = [
-                None,
-                0.2,
-                0.3,
-                0.4,
-                0.5,
-                0.55,
-                0.6,
-                0.7,
-                0.8,
-                0.83,
-                0.86,
-                0.89,
-                0.92,
-                0.95,
-                0.98,
-                0.99,
-                1,
-            ][min(self.w_bit, 16)]
-        assert 0 <= quant_ratio <= 1, logger.error(
-            f"Wrong quant ratio. Must in [0,1], but got {quant_ratio}"
-        )
-        self.quant_ratio = quant_ratio
-
-    def forward(self, x):
-        if self.quant_ratio < 1 and self.training:
-            ### implementation from fairseq
-            ### must fully quantize during inference
-            quant_noise_mask = torch.empty_like(x, dtype=torch.bool).bernoulli_(
-                1 - self.quant_ratio
-            )
-        else:
-            quant_noise_mask = None
-
-        weight = torch.sigmoid(x)  # [0, 1]
-        weight_q = self.uniform_q(weight)
-        if quant_noise_mask is not None:
-            noise = weight_q.data.sub_(weight.data).masked_fill_(quant_noise_mask, 0)
-            ### unquantized weights have to follow reparameterization, i.e., tanh
-            weight_q = weight + noise
-
-        return weight_q
-
-
-class HardRoundFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x: Tensor) -> Tensor:
-        # x_max, indices = x.max(dim=1, keepdim=True)
-        # illegal_indices = [k for k, v in Counter(indices.view(-1).cpu().numpy().tolist()).items() if v > 1]
-        # mask = x_max > 0.95
-        # for i in illegal_indices:
-
-        mask = (x.max(dim=1, keepdim=True)[0] > 0.9).repeat(1, x.size(-1))
-        ctx.mask = mask
-        return torch.where(mask, x.round(), x)
-
-    def backward(ctx, grad_output: Tensor) -> Tensor:
-        return grad_output.clone().masked_fill_(ctx.mask, 0)
-
-
-def hard_diff_round(x: Tensor) -> Tensor:
-    """Project to the closest permutation matrix"""
-    assert x.size(-1) == x.size(
-        -2
-    ), f"input x has to be a square matrix, but got {x.size()}"
-    return HardRoundFunction.apply(x)

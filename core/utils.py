@@ -1,9 +1,3 @@
-'''
-Date: 2024-03-24 16:56:03
-LastEditors: ScopeX-ASU jiaqigu@asu.edu
-LastEditTime: 2024-05-01 23:58:51
-FilePath: /SparseTeMPO/core/utils.py
-'''
 """
 Date: 2024-03-24 16:43:34
 LastEditors: Jiaqi Gu && jiaqigu@asu.edu
@@ -11,7 +5,6 @@ LastEditTime: 2024-03-24 16:43:34
 FilePath: /SparseTeMPO/core/models/utils.py
 """
 
-import torch
 from torch import nn
 from torch.nn.modules.batchnorm import _BatchNorm
 

@@ -6,14 +6,10 @@ LastEditors: Jiaqi Gu (jqgu@utexas.edu)
 LastEditTime: 2021-10-24 16:25:28
 """
 
-from typing import Callable, Dict, List, Optional, Tuple, Union
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from pyutils.general import logger
 from torch import Tensor, nn
-from torch.types import Device, _size
+from torch.types import Device
 
 from core.models.layers.utils import *
 
@@ -187,7 +183,6 @@ class VGG(TeMPO_Base):
         self.crosstalk_factor = 0
 
         self.set_phase_variation(False)
-        self.set_global_temp_drift(False)
         self.set_crosstalk_noise(False)
         self.set_noise_schedulers()
         self.set_weight_noise(0.0)

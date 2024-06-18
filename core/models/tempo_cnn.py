@@ -7,14 +7,11 @@ LastEditTime: 2024-03-24 16:07:53
 """
 
 from collections import OrderedDict
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import List
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from pyutils.general import logger
 from torch import Tensor, nn
-from torch.types import Device, _size
+from torch.types import Device
 
 from core.models.layers.utils import *
 
@@ -73,7 +70,6 @@ class TeMPO_CNN(TeMPO_Base):
         self.crosstalk_factor = 0
 
         self.set_phase_variation(False)
-        self.set_global_temp_drift(False)
         self.set_crosstalk_noise(False)
         self.set_noise_schedulers()
         self.set_weight_noise(0.0)
