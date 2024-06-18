@@ -106,7 +106,7 @@ def train(
         step += 1
 
         if dst_scheduler is not None:
-            dst_scheduler.step() # apply pruning mask and update rate
+            dst_scheduler.step()  # apply pruning mask and update rate
 
         if batch_idx % int(configs.run.log_interval) == 0:
             log = "Train Epoch: {} [{:7d}/{:7d} ({:3.0f}%)] Loss: {:.4e} class Loss: {:.4e}".format(
@@ -138,12 +138,9 @@ def train(
         step=epoch,
     )
     if dst_scheduler is not None:
-        lg.info(
-            f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}"
-        )
-        lg.info(
-            f"Power:{dst_scheduler.get_total_power()}"
-        )
+        lg.info(f"Crosstalk value:{dst_scheduler.get_total_crosstalk()}")
+        lg.info(f"Power:{dst_scheduler.get_total_power()}")
+
 
 def validate(
     model: nn.Module,
@@ -181,9 +178,7 @@ def validate(
     lg.info(
         f"\nValidation set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(validation_loader.dataset)} ({accuracy:.2f}%)\n"
     )
-    mlflow.log_metrics(
-        {"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch)
 
 
 def test(
@@ -226,9 +221,7 @@ def test(
         f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
     )
 
-    mlflow.log_metrics(
-        {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch)
 
 
 def main() -> None:
@@ -286,7 +279,7 @@ def main() -> None:
     criterion = builder.make_criterion(configs.criterion.name, configs.criterion).to(
         device
     )
-    
+
     aux_criterions = dict()
     if configs.aux_criterion is not None:
         for name, config in configs.aux_criterion.items():
@@ -309,7 +302,9 @@ def main() -> None:
         configs.dst_scheduler = None
 
     if configs.dst_scheduler is not None:
-        dst_scheduler = builder.make_dst_scheduler(optimizer, model, train_loader, configs)
+        dst_scheduler = builder.make_dst_scheduler(
+            optimizer, model, train_loader, configs
+        )
     else:
         dst_scheduler = None
     lg.info(model)
@@ -360,7 +355,7 @@ def main() -> None:
 
     lossv, accv = [0], [0]
     epoch = 0
-    
+
     try:
         lg.info(
             f"Experiment {configs.run.experiment} ({experiment.experiment_id}) starts. Run ID: ({mlflow.active_run().info.run_id}). PID: ({os.getpid()}). PPID: ({os.getppid()}). Host: ({os.uname()[1]})"
@@ -448,10 +443,10 @@ def main() -> None:
                 mixup_fn=test_mixup_fn,
                 fp16=grad_scaler._enabled,
             )
-            if dst_scheduler is not None: 
+            if dst_scheduler is not None:
                 if epoch > (configs.run.n_epochs * configs.dst_scheduler.T_max):
                     saver.save_model(
-                        getattr(model, "_orig_mod", model), # remove compiled wrapper
+                        getattr(model, "_orig_mod", model),  # remove compiled wrapper
                         accv[-1],
                         epoch=epoch,
                         path=checkpoint,
@@ -460,7 +455,7 @@ def main() -> None:
                     )
             else:
                 saver.save_model(
-                    getattr(model, "_orig_mod", model), # remove compiled wrapper
+                    getattr(model, "_orig_mod", model),  # remove compiled wrapper
                     accv[-1],
                     epoch=epoch,
                     path=checkpoint,
@@ -473,10 +468,9 @@ def main() -> None:
                         if m.prune_mask is not None:
                             print(m.prune_mask["row_mask"].cpu().numpy().tolist())
 
-
             if epoch == configs.run.n_epochs:
                 saver_for_last_epoch.save_model(
-                    getattr(model, "_orig_mod", model), # remove compiled wrapper
+                    getattr(model, "_orig_mod", model),  # remove compiled wrapper
                     accv[-1],
                     epoch=epoch,
                     path=checkpoint,

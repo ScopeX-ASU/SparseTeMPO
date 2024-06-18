@@ -171,9 +171,7 @@ def validate(
     lg.info(
         f"\nValidation set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(validation_loader.dataset)} ({accuracy:.2f}%)\n"
     )
-    mlflow.log_metrics(
-        {"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"val_loss": class_meter.avg, "val_acc": accuracy}, step=epoch)
 
 
 def test(
@@ -216,9 +214,7 @@ def test(
         f"\nTest set: Average loss: {class_meter.avg:.4e}, Accuracy: {correct}/{len(test_loader.dataset)} ({accuracy:.2f}%)\n"
     )
 
-    mlflow.log_metrics(
-        {"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch
-    )
+    mlflow.log_metrics({"test_loss": class_meter.avg, "test_acc": accuracy}, step=epoch)
 
 
 def main() -> None:
@@ -332,7 +328,7 @@ def main() -> None:
 
     lossv, accv = [0], [0]
     epoch = 0
-    
+
     try:
         lg.info(
             f"Experiment {configs.run.experiment} ({experiment.experiment_id}) starts. Run ID: ({mlflow.active_run().info.run_id}). PID: ({os.getpid()}). PPID: ({os.getppid()}). Host: ({os.uname()[1]})"
@@ -419,7 +415,7 @@ def main() -> None:
                 fp16=grad_scaler._enabled,
             )
             saver.save_model(
-                getattr(model, "_orig_mod", model), # remove compiled wrapper
+                getattr(model, "_orig_mod", model),  # remove compiled wrapper
                 accv[-1],
                 epoch=epoch,
                 path=checkpoint,
