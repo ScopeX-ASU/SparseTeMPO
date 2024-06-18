@@ -396,7 +396,7 @@ def make_dst_scheduler(
         death_rate_decay = CosineDecay(cfg.death_rate, T_max=len(train_loader) * configs.run.n_epochs)
     else:
         NotImplementedError
-    scheduler = DSTScheduler2(
+    scheduler = DSTScheduler(
         optimizer,
         death_rate=cfg.death_rate,
         growth_death_ratio=cfg.growth_death_ratio,

@@ -1,11 +1,3 @@
-"""
-Description:
-Author: Jiaqi Gu (jqgu@utexas.edu)
-Date: 2021-10-24 16:23:19
-LastEditors: ScopeX-ASU jiaqigu@asu.edu
-LastEditTime: 2023-10-28 22:57:34
-"""
-
 import inspect
 from typing import Callable, Dict, Optional, Union
 
@@ -173,7 +165,6 @@ class TeMPO_Base(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-
     def set_phase_variation(self, flag: bool = True):
         for layer in self.modules():
             if isinstance(layer, self._conv_linear) and hasattr(
@@ -222,8 +213,8 @@ class TeMPO_Base(nn.Module):
     def set_crosstalk_noise(
         self,
         flag: bool = True,
-        first_conv_layer: bool = True, # add crosstalk to first conv
-        last_linear_layer: bool = False, ## distable crosstalk for last linear
+        first_conv_layer: bool = True,  # add crosstalk to first conv
+        last_linear_layer: bool = False,  ## distable crosstalk for last linear
     ) -> None:
         modules = [m for m in self.modules() if isinstance(m, self._conv_linear)]
         if not first_conv_layer:
@@ -364,7 +355,6 @@ class TeMPO_Base(nn.Module):
             handle.remove()
         return np.sum(list(cycles.values())), cycles
 
-
     def set_enable_ste(self, enable_ste: bool) -> None:
         for layer in self.modules():
             if isinstance(layer, self._conv_linear):
@@ -374,7 +364,6 @@ class TeMPO_Base(nn.Module):
         for layer in self.modules():
             if isinstance(layer, self._conv_linear):
                 layer._noise_flag = noise_flag
-
 
     def calc_weight_MZI_energy(
         self,

@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-# @Author: Hanqing Zhu
-# @Date:   2023-02-07 11:02:13
-# @Last Modified by:   Hanqing Zhu
-# @Last Modified time: 2023-02-24 01:48:16
-# photonic core base class
-
 __all__ = ["PhotoniceCore"]  # noqa: F822
 
 class PhotonicCore():

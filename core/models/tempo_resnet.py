@@ -1,11 +1,3 @@
-"""
-Description:
-Author: Jiaqi Gu (jqgu@utexas.edu)
-Date: 2021-10-24 16:24:50
-LastEditors: Jiaqi Gu (jqgu@utexas.edu)
-LastEditTime: 2021-10-24 16:24:50
-"""
-
 from typing import Union
 
 import torch
@@ -14,10 +6,9 @@ from torch import Tensor, nn
 from torch.nn.modules.activation import ReLU
 from torch.types import Device, _size
 
-from .tempo_base import TeMPO_Base, LinearBlock, ConvBlock
-
 from core.models.layers.utils import *
 
+from .tempo_base import ConvBlock, LinearBlock, TeMPO_Base
 
 __all__ = [
     "TeMPO_ResNet18",

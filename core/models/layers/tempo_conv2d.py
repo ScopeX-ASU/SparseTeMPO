@@ -1,11 +1,3 @@
-"""
-Description:
-Author: Jiaqi Gu (jqgu@utexas.edu)
-Date: 2021-06-06 23:37:55
-LastEditors: Jiaqi Gu (jqgu@utexas.edu)
-LastEditTime: 2021-06-06 23:37:55
-"""
-
 from typing import Optional, Tuple
 
 import numpy as np
@@ -219,7 +211,6 @@ class TeMPOBlockConv2d(ONNBaseLayer):
 
         return instance
 
-
     def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
         bs, input_H, input_W = x_size[0], x_size[-2], x_size[-1]
         output_H = (
@@ -252,7 +243,6 @@ class TeMPOBlockConv2d(ONNBaseLayer):
         ) / self.stride[1] + 1
         return int(h_out), int(w_out)
 
-
     def forward(self, x: Tensor) -> Tensor:
         if self.in_bit < 16:
             x = self.input_quantizer(x)
@@ -276,51 +266,7 @@ class TeMPOBlockConv2d(ONNBaseLayer):
             dilation=self.dilation,
             groups=self.groups,
         )
-   
-        if self._noise_flag:
-            x = self._add_output_noise(x)
-        return x
 
-    def forward_bk(self, x: Tensor) -> Tensor:
-        if self.in_bit < 16:
-            x = self.input_quantizer(x)
-        if not self.fast_forward_flag or self.weight is None:
-            weight = self.build_weight(
-                enable_noise=self._noise_flag,
-                enable_ste=self._enable_ste,
-            )  # [p, q, k, k]
-        else:
-            weight = self.weight
-        weight_ideal = self.build_weight(
-                enable_noise=False,
-                enable_ste=self._enable_ste,
-            )
-        self.set_output_power_gating(False)
-        weight_noisy = self.build_weight(
-                enable_noise=True,
-                enable_ste=self._enable_ste,
-            )
-        self.set_output_power_gating(True)
-        weight_noisy_og = self.build_weight(
-                enable_noise=True,
-                enable_ste=self._enable_ste,
-            )
-        xs = []
-        for weight in [weight_ideal, weight_noisy, weight_noisy_og]:
-            weight = merge_chunks(weight)[
-                : self.out_channels, : self.in_channels_flat
-            ].view(-1, self.in_channels, self.kernel_size[0], self.kernel_size[1])
-            out = F.conv2d(
-                x,
-                weight,
-                bias=self.bias,
-                stride=self.stride,
-                padding=self.padding,
-                dilation=self.dilation,
-                groups=self.groups,
-            )
-            xs.append(out)
-        x = xs[1] * 0.5 + xs[0] * 0.5
         if self._noise_flag:
             x = self._add_output_noise(x)
         return x
