@@ -6,33 +6,34 @@ By [Ziang Yin](https://scopex-asu.github.io/index.html), Nicholas Gangi, Meng Zh
 
 # Introduction
 **SCATTER** is a novel algorithm-circuit co-sparse photonic accelerator featuring dynamically reconfigurable signal path via thermal-tolerant, power-efficient in-situ light redistribution and power gating. 
-<!-- <p align="center">
-  <img src="figures/Teaser.jpg" width="20" height="160"/>
+<p align="center">
+  <img src="figures/Teaser.jpg" width="400" height="200"/>
 
-</p> -->
+</p>
 **SCATTER** is designed to overcome the limitations of
 traditional photonic accelerators with these key features: ➊ phase-agnostic incoherent photonic tensor cores for robust tensor computing; ➋ shared input modulation modules and readout circuitry to balance area, power, and control flexibility; 
-<!-- <p align="center">
-  <img src="figures/ArchOverview.jpg" width="400" height="160"/>
+<p align="center">
+  <img src="figures/ArchOverview.jpg" width="400" height="200"/>
 
-</p> -->
+</p>
 ➌ in-situ tunable rerouter for light redistribution; 
-<!-- <p align="center">
-  <img src="figures/TunableRerouter2.jpg" width="400" height="160"/>
+<p align="center">
+  <img src="figures/TunableRerouter2.jpg" width="600" height="150"/>
 
-</p> -->
+</p>
 ➍ hardware gating to support structured row-column sparsity with enhanced power efficiency and thermal crosstalk robustness; 
-<!-- <p align="center">
-  <img src="figures/PhotocurrentSwitches.jpg" width="400" height="160"/>
+<p align="center">
+  <img src="figures/PhotocurrentSwitches.jpg" width="300" height="200"/>
 
-</p> -->
+</p>
 ➎ co-optimized devices, circuits, and architecture configurations with maximum efficiency and thermal variation tolerance.
 
-**SCATTER** achieves a 511× area reduction and 12.4× power saving with superior crosstalk tolerance that enables unprecedented circuit layout compactness and on-chip power efficiency.
-<!-- <p align="center">
-  <img src="figures/ProgressPowerAreaOpt.jpg" width="400" height="160"/>
 
-</p> -->
+**SCATTER** achieves a 511× area reduction and 12.4× power saving with superior crosstalk tolerance that enables unprecedented circuit layout compactness and on-chip power efficiency.
+<p align="center">
+  <img src="figures/ProgressPowerAreaOpt.jpg" width="440" height="300"/>
+
+</p>
 
 A power-optimized, crosstalk-aware dynamic sparse training framework is introduced to explore row-column structured sparsity and ensure marginal accuracy loss and maximum power
 efficiency. 
