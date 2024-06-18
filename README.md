@@ -37,10 +37,10 @@ traditional photonic accelerators with these key features: ➊ phase-agnostic in
 
 A power-optimized, crosstalk-aware dynamic sparse training framework is introduced to explore row-column structured sparsity and ensure marginal accuracy loss and maximum power
 efficiency. 
-<!-- <p align="center">
-  <img src="figures/mainresults.jpg" width="400" height="160"/>
+<p align="center">
+  <img src="figures/mainresults.jpg" width="600" height="160"/>
 
-</p> -->
+</p>
 
 # Dependencies
 * Python >= 3.8
