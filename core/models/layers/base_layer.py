@@ -1,19 +1,12 @@
-"""
-Description: 
-Author: Jiaqi Gu (jiaqigu@asu.edu)
-Date: 2023-11-14 16:53:34
-LastEditors: Jiaqi Gu && jiaqigu@asu.edu
-LastEditTime: 2023-11-17 15:34:49
-"""
-
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from pyutils.compute import gen_gaussian_noise, add_gaussian_noise
+from pyutils.compute import add_gaussian_noise, gen_gaussian_noise
 from torch import Tensor, nn
 from torch.nn import Parameter, init
 from torch.types import Device
+
 from .utils import STE, mzi_out_diff_to_phase, mzi_phase_to_out_diff, partition_chunks
 
 __all__ = ["ONNBaseLayer"]
@@ -202,7 +195,6 @@ class ONNBaseLayer(nn.Module):
 
         return x
 
-
     def _add_crosstalk_noise(self, x, src: str = "weight") -> None:
         if (not self._enable_crosstalk) or self.crosstalk_scheduler is None:
             return x  #  no noise injected
@@ -243,38 +235,43 @@ class ONNBaseLayer(nn.Module):
         ## ER 6dB SL-MZM,
         self._enable_input_power_gating = flag
         self._input_modulator_ER = ER
-    
+
     def set_output_power_gating(self, flag: bool = False) -> None:
         ## enable or disable power gating for TIA/ADC shutdown if prune_mask is available
         self._enable_output_power_gating = flag
 
     def _add_output_noise(self, x) -> None:
         if self.output_noise_std > 1e-6:
-            if (self._enable_light_redist or self._enable_output_power_gating) and self.prune_mask is not None:
+            if (
+                self._enable_light_redist or self._enable_output_power_gating
+            ) and self.prune_mask is not None:
                 r, k1, k2 = self.miniblock[0], self.miniblock[-2], self.miniblock[-1]
-                p, q, c = self.weight.shape[0], self.weight.shape[1], self.weight.shape[3]  # q*c
+                p, q, c = (
+                    self.weight.shape[0],
+                    self.weight.shape[1],
+                    self.weight.shape[3],
+                )  # q*c
                 if self._enable_light_redist:
                     col_mask = self.prune_mask["col_mask"]  # [p,q,1,c,1,k2]
                     col_nonzeros = col_mask.sum(-1).squeeze(-1)  # [p,q,1,c]
                     factor = col_nonzeros / k2  # [p,q,1,c]
                 else:
-                    factor = torch.ones([p,q,1,c], device=self.device) # [p,q,1,c]
+                    factor = torch.ones([p, q, 1, c], device=self.device)  # [p,q,1,c]
 
                 if self._enable_output_power_gating:
                     row_mask = self.prune_mask["row_mask"]  # [p,q,r,1,k1,1]
                     row_mask = row_mask[..., 0, :, :].flatten(2, 3)  # [p,q,r*k1, 1]
                     factor = factor * row_mask  # [p,q,r*k1, c]
                 else:
-                    factor = factor.expand(-1, -1, r*k1, -1) # [p,q,r*k1, c]
+                    factor = factor.expand(-1, -1, r * k1, -1)  # [p,q,r*k1, c]
 
                 factor = factor.permute(0, 2, 1, 3).flatten(0, 1)[
                     : x.shape[1]
                 ]  # [p*r*k1, q, c] -> [out_c, q, c]
 
-
                 std = factor.mul(k2**0.5).square().sum([-2, -1]).sqrt()
 
-                std *= self.output_noise_std # [out_c]
+                std *= self.output_noise_std  # [out_c]
 
                 noise = torch.randn_like(x)  # [bs, out_c, h, w] or [bs, out_c, q, c]
 
@@ -394,8 +391,10 @@ class ONNBaseLayer(nn.Module):
                     )  ## reapply mask to shutdown nonzero weights due to crosstalk, but gradient will still flow through the mask due to STE
 
                 if self._enable_input_power_gating and self.prune_mask is not None:
-                    ratio = 1/10**(self._input_modulator_ER / 10)
-                    weight_noisy = weight_noisy * self.prune_mask["col_mask"].float().add(ratio).clamp(max=1)
+                    ratio = 1 / 10 ** (self._input_modulator_ER / 10)
+                    weight_noisy = weight_noisy * self.prune_mask[
+                        "col_mask"
+                    ].float().add(ratio).clamp(max=1)
 
                 if enable_ste:
                     weight = STE.apply(
@@ -426,7 +425,7 @@ class ONNBaseLayer(nn.Module):
         if self.weight_noise_std > 1e-6:
             weight = weight * (1 + torch.randn_like(weight) * self.weight_noise_std)
         return weight
-        
+
     def forward(self, x):
         raise NotImplementedError
 

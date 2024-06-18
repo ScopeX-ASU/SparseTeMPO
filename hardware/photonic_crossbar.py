@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# @Author: Hanqing Zhu
-# @Date:   2023-02-06 15:30:48
-# @Last Modified by:   Hanqing Zhu(hqzhu@utexas.edu)
-# @Last Modified time: 2023-10-22 22:56:41
 # basic simulator for photonic crossbar
 import math
 from .photonic_core_base import PhotonicCore

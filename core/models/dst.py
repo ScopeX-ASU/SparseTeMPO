@@ -12,7 +12,7 @@ import torch.optim as optim
 from pyutils.general import logger
 from torch import Tensor, nn
 
-__all__ = ["DSTScheduler2", "CosineDecay", "LinearDecay"]
+__all__ = ["DSTScheduler", "CosineDecay", "LinearDecay"]
 
 
 class CosineDecay(object):
@@ -92,9 +92,11 @@ class MultiMask(object):
 
         try:
             mask = self.data
-        
+
         except (ValueError, TypeError) as e:
-            raise ValueError("mask shapes should be able to multiplied together.") from e
+            raise ValueError(
+                "mask shapes should be able to multiplied together."
+            ) from e
 
         self.total_elem = mask.numel()
         self.shape = mask.shape
@@ -198,7 +200,7 @@ class MultiMask(object):
         return copy.deepcopy(self)
 
 
-class DSTScheduler2(nn.Module):
+class DSTScheduler(nn.Module):
     _death_modes = {
         "magnitude",
         "random",
@@ -240,9 +242,9 @@ class DSTScheduler2(nn.Module):
         ADC_power: float = 7.4,
         TIA_power: float = 3,
         HDAC_power: float = 5.74,
-        arch_sim = None,
+        arch_sim=None,
         skip_first_layer=False,
-        skip_last_layer = True,
+        skip_last_layer=True,
         update_frequency: int = 100,
         keep_same: bool = False,
         T_max: int = 10000,
@@ -366,13 +368,12 @@ class DSTScheduler2(nn.Module):
         # last_linear_idx = None
         print(module)
 
-        
         for idx, (name, m) in enumerate(module.named_modules()):
             if isinstance(m, module._conv) and self.first_conv_idx is None:
                 self.first_conv_idx = idx
                 print("First Layer Conv Idx:", self.first_conv_idx)
                 break
-        
+
         if self.skip_last_layer:
             for idx, (name, m) in enumerate(module.named_modules()):
                 if isinstance(m, module._linear):
@@ -384,7 +385,7 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and (idx != self.last_linear_idx)):
+                if isinstance(m, module._conv_linear) and (idx != self.last_linear_idx):
                     if self.skip_first_layer and idx == self.first_conv_idx:
                         continue
                     name_cur = name + "_" + str(index)
@@ -407,7 +408,7 @@ class DSTScheduler2(nn.Module):
             self.set_splitter_bias(biases=self.splitter_biases)
             index = len(self.masks)
             for idx, (name, m) in enumerate(module.named_modules()):
-                if (isinstance(m, module._conv_linear) and (idx != self.last_linear_idx)):
+                if isinstance(m, module._conv_linear) and (idx != self.last_linear_idx):
                     if self.skip_first_layer and idx == self.first_conv_idx:
                         continue
                     print(idx)
@@ -586,8 +587,14 @@ class DSTScheduler2(nn.Module):
             )
             ## use crosstalk scheduler to compute the power with fitted curve of simulation data
             ## here we make sure angle is in the range of [-pi/2, pi/2]
-            p = self.modules[0].crosstalk_scheduler.calc_MZI_power(angle.data, interv_s=10, reduction="none").sum(dim=sum_dims)
-            
+            p = (
+                self.modules[0]
+                .crosstalk_scheduler.calc_MZI_power(
+                    angle.data, interv_s=10, reduction="none"
+                )
+                .sum(dim=sum_dims)
+            )
+
             power += p
 
         # print(power)
@@ -665,7 +672,6 @@ class DSTScheduler2(nn.Module):
         ## given sparsity mask and powers, find the subsets with minimal power. some times not unique.
         lowest_power = pattern_powers.min()
         return patterns[pattern_powers == lowest_power], lowest_power.item()
-
 
     def find_least_crosstalk_patterns(
         self, masks: Tensor, is_col: bool = True
@@ -921,23 +927,33 @@ class DSTScheduler2(nn.Module):
     def _structure_init_random(self, density: float = 0.05) -> None:
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
-                mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                mask["row_mask"].copy_(
+                    self.generate_interleave_mask(mask, density, False, self.device)
+                )
 
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(mask, density, False, self.device)
+                    )
                 else:
                     mask["col_mask"].bernoulli_(p=density)
 
         elif self.pruning_type == "structure_row_col":
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(mask, density, False, self.device)
+                    )
                 else:
                     row_density = max(density, 0.5)
                     col_density = density / row_density
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, row_density, False, self.device))
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(
+                            mask, row_density, False, self.device
+                        )
+                    )
                     mask["col_mask"].bernoulli_(col_density)
         else:
             raise ValueError(f"Unrecognized Pruning Type {self.pruning_type}")
@@ -952,17 +968,26 @@ class DSTScheduler2(nn.Module):
         return min_power_patterns, min_power
 
     def _structure_init_power_crosstalk(
-        self, density: float = 0.05, opts: List = ["power", "crosstalk",]
+        self,
+        density: float = 0.05,
+        opts: List = [
+            "power",
+            "crosstalk",
+        ],
     ) -> None:
         if density == 1:
             return
         if self.pruning_type == "structure_row":
             for name, mask in self.masks.items():
-                mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                mask["row_mask"].copy_(
+                    self.generate_interleave_mask(mask, density, False, self.device)
+                )
         elif self.pruning_type == "structure_col":
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(mask, density, False, self.device)
+                    )
                 else:
                     ## assume all blocks have the same initial sparsity mask with min power
                     ## just select k2' from k2 with min power
@@ -973,7 +998,9 @@ class DSTScheduler2(nn.Module):
                     )  # [#combinations, col_num]
                     for opt in opts:
                         if opt == "power":
-                            patterns, _ = self.find_least_switch_power_patterns(patterns)
+                            patterns, _ = self.find_least_switch_power_patterns(
+                                patterns
+                            )
                         elif opt == "crosstalk":
                             patterns, _ = self.find_least_crosstalk_patterns(
                                 patterns, is_col=True
@@ -984,12 +1011,16 @@ class DSTScheduler2(nn.Module):
         elif self.pruning_type == "structure_row_col":
             for name, mask in self.masks.items():
                 if name == self.first_conv_name:
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(mask, density, False, self.device)
+                    )
                 else:
                     row_density = max(density, 0.5)
                     col_density = density / row_density
-                    mask["row_mask"].copy_(self.generate_interleave_mask(mask, density, False, self.device))
-                    
+                    mask["row_mask"].copy_(
+                        self.generate_interleave_mask(mask, density, False, self.device)
+                    )
+
                     row_num, col_num = k1, k2 = self.params[name].shape[-2:]
                     max_empty_col_num = int(round(col_num * (1 - col_density)))
                     if max_empty_col_num > 0:
@@ -1004,15 +1035,22 @@ class DSTScheduler2(nn.Module):
                                 round(k1 - (k1 * k2 * density) / (k2 - empty_col_num))
                             )
 
-                            col_patterns = self.find_sparsity_patterns(col_num, empty_col_num)
+                            col_patterns = self.find_sparsity_patterns(
+                                col_num, empty_col_num
+                            )
                             score = {}
                             for opt in opts:
                                 if opt == "power":
                                     col_patterns, switch_power = (
-                                        self.find_least_switch_power_patterns(col_patterns)
+                                        self.find_least_switch_power_patterns(
+                                            col_patterns
+                                        )
                                     )
                                     TIA_ADC_power = self.calc_TIA_ADC_power(
-                                        row_num, empty_row_num, self.TIA_power, self.ADC_power
+                                        row_num,
+                                        empty_row_num,
+                                        self.TIA_power,
+                                        self.ADC_power,
                                     )
                                     HDAC_power = self.calc_HDAC_power(
                                         col_num, empty_col_num, self.HDAC_power
@@ -1172,7 +1210,11 @@ class DSTScheduler2(nn.Module):
                 new_mask = self.threshold_death(mask, weight, name)
 
             self.pruned_number[name] = int(new_mask.num_zeros() - self.name2zeros[name])
-            self.total_regrowth[name] = int(round(weight.numel() * self.density_dict[name] - new_mask.num_nonzeros()))
+            self.total_regrowth[name] = int(
+                round(
+                    weight.numel() * self.density_dict[name] - new_mask.num_nonzeros()
+                )
+            )
             assert (
                 self.pruned_number[name] >= 0
             ), f"{new_mask.num_nonzeros()} must >= {self.name2nonzeros[name]}"
@@ -1210,9 +1252,11 @@ class DSTScheduler2(nn.Module):
                     raise ValueError(f"Unrecognized Pruning Type {pruning_type}")
             self.masks[name] = new_mask
 
-
     def update_and_apply_mask(
-        self, pruning_type: str | None = None, indicator_list=None, keep_same: bool = False
+        self,
+        pruning_type: str | None = None,
+        indicator_list=None,
+        keep_same: bool = False,
     ) -> None:
         # update pruning and growth masks
         pruning_type = pruning_type or self.pruning_type
@@ -1361,7 +1405,7 @@ class DSTScheduler2(nn.Module):
             num_select=num_remove,
         )
 
-        return mask 
+        return mask
 
     def magnitude_death(self, mask, weight, name):
 
@@ -1521,7 +1565,11 @@ class DSTScheduler2(nn.Module):
         p, q, r, c, k1, k2 = weight.shape
         # num of rows to prune out of total p*q*r*k1 rows
         if row_col:
-            num_row_select = int(round(num_select / row_elements_average)) if row_elements_average > 0 else 0
+            num_row_select = (
+                int(round(num_select / row_elements_average))
+                if row_elements_average > 0
+                else 0
+            )
         else:
             num_row_select = int(round(num_select / (c * k2)))
 
@@ -1567,7 +1615,6 @@ class DSTScheduler2(nn.Module):
                 selected_row_indices_flat, mask["row_mask"].shape
             )  # tuple of indices in each dimension of row_mask
 
-
             # only magnitude sorting, no power or crosstalk optimization
             if len(opts) == 0 or num_row_select_candidates == num_row_select:
                 mask["row_mask"][selected_row_indices] = 0 if death else 1
@@ -1580,6 +1627,7 @@ class DSTScheduler2(nn.Module):
             )
 
             old_layer_mzi_power = self.calc_weight_MZI_power(name, mask)
+
             def obj_fn(
                 opt: str,
                 mask_temp: MultiMask,
@@ -1679,7 +1727,9 @@ class DSTScheduler2(nn.Module):
         # mask here is col mask [p, q, r, 1, k1, 1] and row mask [p, q, 1, c, 1, k2]
         # weight here is [p, q, r, c, k1, k2]
         p, q, r, c, k1, k2 = weight.shape
-        num_col_select = int(round(num_select / mask["row_mask"][0,0].sum().item()))  # num of col p*q*c*k2
+        num_col_select = int(
+            round(num_select / mask["row_mask"][0, 0].sum().item())
+        )  # num of col p*q*c*k2
 
         if num_col_select == 0:
             return mask
@@ -1828,7 +1878,6 @@ class DSTScheduler2(nn.Module):
         else:
             raise NotImplementedError
 
-
     def row_col_magnitude_select(
         self,
         mask: MultiMask,
@@ -1841,12 +1890,11 @@ class DSTScheduler2(nn.Module):
         p, q, r, c, k1, k2 = weight.shape
 
         if death:
-            col_turn_off_elements = mask["row_mask"].sum([2, 4]).flatten() # [p*q]
+            col_turn_off_elements = mask["row_mask"].sum([2, 4]).flatten()  # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
         else:
-            col_turn_off_elements = (~mask["row_mask"]).sum([2, 4]).flatten() # [p*q]
+            col_turn_off_elements = (~mask["row_mask"]).sum([2, 4]).flatten()  # [p*q]
             col_turn_off_average = col_turn_off_elements.float().mean().item()
-
 
         col_total_required_elements = (
             self.HDAC_power / (self.ADC_power + self.TIA_power + self.HDAC_power)
@@ -1864,19 +1912,27 @@ class DSTScheduler2(nn.Module):
             num_select=col_total_required_elements,
         )
 
-        real_turned_off_by_col = (mask.num_nonzeros() - mask_temp.num_nonzeros()) if death else -(mask.num_nonzeros() - mask_temp.num_nonzeros())
+        real_turned_off_by_col = (
+            (mask.num_nonzeros() - mask_temp.num_nonzeros())
+            if death
+            else -(mask.num_nonzeros() - mask_temp.num_nonzeros())
+        )
         logger.info(f"real_turned_off_by_col:{real_turned_off_by_col}")
 
         if real_turned_off_by_col > 0:
-            
+
             logger.info("Now dealing with rows")
             row_total_required_elements = num_select - real_turned_off_by_col
             row_required_weight = weight.data * mask_temp
-            
+
             if death:
-                row_turn_off_average = mask_temp["col_mask"].sum([3, 5]).float().mean().item()
+                row_turn_off_average = (
+                    mask_temp["col_mask"].sum([3, 5]).float().mean().item()
+                )
             else:
-                row_turn_off_average = (~mask_temp["col_mask"]).sum([3, 5]).float().mean().item()
+                row_turn_off_average = (
+                    (~mask_temp["col_mask"]).sum([3, 5]).float().mean().item()
+                )
 
             mask_temp = self.row_only_magnitude_select(
                 mask_temp,
@@ -1889,7 +1945,6 @@ class DSTScheduler2(nn.Module):
             )
 
         return mask_temp
-
 
     def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
@@ -1926,19 +1981,31 @@ class DSTScheduler2(nn.Module):
                 UTILITY
     """
 
-    def generate_interleave_mask(self, mask: MultiMask, sparsity: float = 0.5, is_col: bool=False, device="cuda:0"):
+    def generate_interleave_mask(
+        self,
+        mask: MultiMask,
+        sparsity: float = 0.5,
+        is_col: bool = False,
+        device="cuda:0",
+    ):
         p, q, r, _, k1, _ = mask["row_mask"].shape
         _, _, _, c, _, k2 = mask["col_mask"].shape
-        
+
         total_element = mask.data.numel()
 
         row_turn_off_number = int(round(r * k1 * (1 - sparsity)))
-        row_interleave_index = torch.tensor(list(range(0, r*k1, 2)) + list(range(1, r*k1, 2)))[:row_turn_off_number]
+        row_interleave_index = torch.tensor(
+            list(range(0, r * k1, 2)) + list(range(1, r * k1, 2))
+        )[:row_turn_off_number]
 
-        col_turn_off_number = int(round((total_element - total_element * sparsity) / (r * k1) / (p * q)))
-        col_interleave_index = torch.tensor(list(range(0, c*k2, 2)) + list(range(1, c*k2, 2)))[:col_turn_off_number]
-        row_mask = torch.ones(r*k1, dtype=bool)
-        col_mask = torch.ones(c*k2, dtype=bool)
+        col_turn_off_number = int(
+            round((total_element - total_element * sparsity) / (r * k1) / (p * q))
+        )
+        col_interleave_index = torch.tensor(
+            list(range(0, c * k2, 2)) + list(range(1, c * k2, 2))
+        )[:col_turn_off_number]
+        row_mask = torch.ones(r * k1, dtype=bool)
+        col_mask = torch.ones(c * k2, dtype=bool)
         row_mask[k1 - row_interleave_index - 1] = 0
         col_mask[k2 - col_interleave_index - 1] = 0
         row_mask = row_mask.reshape(r, 1, k1, 1).expand(p, q, -1, -1, -1, -1)
@@ -1964,8 +2031,12 @@ class DSTScheduler2(nn.Module):
             total_num_nonzeros += num_nonzeros
             total_elements += mask.numel()
             logger.info(val)
-            logger.info(f"Row density:{mask['row_mask'].sum().item() / mask['row_mask'].numel():.3f}")
-            logger.info(f"Col density:{mask['col_mask'].sum().item() / mask['col_mask'].numel():.3f}")
+            logger.info(
+                f"Row density:{mask['row_mask'].sum().item() / mask['row_mask'].numel():.3f}"
+            )
+            logger.info(
+                f"Col density:{mask['col_mask'].sum().item() / mask['col_mask'].numel():.3f}"
+            )
         logger.info(f"Network density:{total_num_nonzeros / total_elements:.3f}")
         logger.info("Death rate: {0}\n".format(self.death_rate))
 

@@ -1,11 +1,3 @@
-"""
-Description:
-Author: Jiaqi Gu (jqgu@utexas.edu)
-Date: 2021-10-24 16:35:39
-LastEditors: ScopeX-ASU jiaqigu@asu.edu
-LastEditTime: 2023-10-04 16:30:46
-"""
-
 import os
 import sys
 from typing import Callable, List, Tuple
@@ -14,11 +6,7 @@ import einops
 import numpy as np
 import pandas as pd
 import torch
-from pyutils.compute import (
-    gen_gaussian_filter2d,
-    merge_chunks,
-    partition_chunks,
-)
+from pyutils.compute import gen_gaussian_filter2d
 from pyutils.general import logger
 from pyutils.quant.lsq import get_default_kwargs_q, grad_scale, round_pass
 from scipy.interpolate import LinearNDInterpolator
@@ -55,9 +43,10 @@ def polynomial(x: Tensor, coeff: Tensor) -> Tensor:
     # print(x.shape)
     out = 0
     for i in range(coeff.size(0) - 1, 0, -1):
-        out = out + x.pow(i).mul_(coeff[coeff.size(0)-i-1])
+        out = out + x.pow(i).mul_(coeff[coeff.size(0) - i - 1])
     out.add_(coeff[-1])
     return out
+
 
 def polynomial2(
     x: Tensor | float, y: Tensor | float, coeff: Tensor | List[float]
@@ -93,7 +82,6 @@ def polynomial2(
         )
     else:
         raise NotImplementedError
-
 
 
 class STE(torch.autograd.Function):
@@ -410,7 +398,7 @@ class PhaseVariationScheduler(object):
         # )  # n ~ N(0, noise_std_map^2) different device has different std
         self.noises = noises  ## add this to record the noise sampled.
         return noises
-    
+
 
 class MZIPowerEvaluator(object):
     def __init__(
@@ -719,15 +707,15 @@ class CrosstalkScheduler(object):
 
         ## MZI center to center distance, can be positive or negative
         ## positive means aggressor is to the right of the victim (left/right layout)
-        index_distance = (active_indices.unsqueeze(0)
+        index_distance = (
+            active_indices.unsqueeze(0)
             .sub(active_indices.unsqueeze(1))  # [k1*k2, k1*k2]
             .float()
         )
-        index_distance[index_distance.abs() > 1] = 200 # only differentiate with 1 MZI in between, otherwise, set a large distance.
-        center_dist = (
-            index_distance
-            .mul_(node_spacing)
+        index_distance[index_distance.abs() > 1] = (
+            200  # only differentiate with 1 MZI in between, otherwise, set a large distance.
         )
+        center_dist = index_distance.mul_(node_spacing)
         ## to estimate, aggressor MZI's center to victim's upper arm, can be positive or negative
 
         distance_upper = (center_dist - self.interv_s / 2).abs()
@@ -760,10 +748,11 @@ class CrosstalkScheduler(object):
         ]
         return torch.tensor(total_crosstalk, device=self.device).view(shape)
 
-    def calc_MZI_power(self, delta_phi: Tensor, interv_s: float=None, reduction: str = "sum") -> Tensor:
+    def calc_MZI_power(
+        self, delta_phi: Tensor, interv_s: float = None, reduction: str = "sum"
+    ) -> Tensor:
         power = self.mzi_power_evaluator.calc_MZI_power(delta_phi, interv_s, reduction)
         return power
-
 
 
 def merge_chunks(x: Tensor) -> Tensor:

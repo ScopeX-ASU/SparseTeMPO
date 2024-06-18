@@ -1,11 +1,3 @@
-"""
-Description:
-Author: Jiaqi Gu (jqgu@utexas.edu)
-Date: 2021-06-06 23:37:55
-LastEditors: Jiaqi Gu (jqgu@utexas.edu)
-LastEditTime: 2021-06-06 23:37:55
-"""
-
 from typing import Optional, Tuple
 
 import numpy as np
@@ -173,7 +165,6 @@ class TeMPOBlockLinear(ONNBaseLayer):
             instance.bias.data.copy_(layer.bias)
 
         return instance
-
 
     def cycles(self, x_size=None, R: int = 8, C: int = 8) -> int:
         bs = x_size[0]

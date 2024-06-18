@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-from pyutils.config import configs, Config
+from pyutils.config import Config, configs
 from pyutils.general import AverageMeter
 from pyutils.general import logger as lg
 from pyutils.torch_train import (
@@ -18,10 +18,11 @@ from pyutils.torch_train import (
     set_torch_deterministic,
 )
 from pyutils.typing import Criterion, DataLoader
-from core.models.dst2 import MultiMask
-from hardware.photonic_crossbar import PhotonicCrossbar
+
 from core import builder
+from core.models.dst import MultiMask
 from core.utils import get_parameter_group, register_hidden_hooks
+from hardware.photonic_crossbar import PhotonicCrossbar
 
 
 def validate(
@@ -118,7 +119,7 @@ def main() -> None:
     configs.arch.core.precision.in_bit = in_bit = configs.model.conv_cfg.in_bit
     configs.arch.core.precision.w_bit = w_bit = configs.model.conv_cfg.w_bit
     configs.arch.core.precision.act_bit = act_bit = configs.model.conv_cfg.w_bit
-    r ,c, k1, k2 = configs.model.conv_cfg.miniblock
+    r, c, k1, k2 = configs.model.conv_cfg.miniblock
     configs.arch.core.width = k2
     configs.arch.core.height = k1
     configs.arch.arch.r = r
@@ -242,8 +243,15 @@ def main() -> None:
                 if isinstance(m, model._conv_linear):  # no last fc layer
                     # if hasattr(m, "prune_mask") and m.prune_mask is not None:
                     #     print(m.prune_mask)
-                    if hasattr(m, "row_prune_mask") and m.row_prune_mask is not None and hasattr(m, "col_prune_mask") and m.col_prune_mask is not None:
-                        m.prune_mask = MultiMask({"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask})
+                    if (
+                        hasattr(m, "row_prune_mask")
+                        and m.row_prune_mask is not None
+                        and hasattr(m, "col_prune_mask")
+                        and m.col_prune_mask is not None
+                    ):
+                        m.prune_mask = MultiMask(
+                            {"row_mask": m.row_prune_mask, "col_mask": m.col_prune_mask}
+                        )
                         percent = m.row_prune_mask.sum() / m.row_prune_mask.numel()
                         col_percent = m.col_prune_mask.sum() / m.col_prune_mask.numel()
                         print(percent, col_percent)
@@ -280,30 +288,41 @@ def main() -> None:
             model = torch.compile(model)
             if teacher is not None:
                 teacher = torch.compile(teacher)
-        
+
         model.set_noise_flag(configs.noise.noise_flag)
         model.set_crosstalk_noise(configs.noise.crosstalk_flag)
         model.set_output_noise(configs.noise.output_noise_std)
         model.set_light_redist(configs.noise.light_redist)
-        model.set_input_power_gating(configs.noise.input_power_gating, configs.noise.input_modulation_ER)
+        model.set_input_power_gating(
+            configs.noise.input_power_gating, configs.noise.input_modulation_ER
+        )
         model.set_output_power_gating(configs.noise.output_power_gating)
 
-        interv_s_minax = [configs.noise.crosstalk_scheduler.interv_s_min, configs.noise.crosstalk_scheduler.interv_s_max]
+        interv_s_minax = [
+            configs.noise.crosstalk_scheduler.interv_s_min,
+            configs.noise.crosstalk_scheduler.interv_s_max,
+        ]
         interv_s_range = np.arange(interv_s_minax[0], interv_s_minax[1] + 0.1, 2)
 
-        interv_h_s_minax = [configs.noise.crosstalk_scheduler.interv_g_min, configs.noise.crosstalk_scheduler.interv_g_max]
+        interv_h_s_minax = [
+            configs.noise.crosstalk_scheduler.interv_g_min,
+            configs.noise.crosstalk_scheduler.interv_g_max,
+        ]
         interv_h_s_range = np.arange(interv_h_s_minax[0], interv_h_s_minax[1] + 0.1, 2)
 
         R = configs.arch.arch.num_tiles
         C = configs.arch.arch.num_pe_per_tile
 
-        mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
-    
+        mzi_total_energy, mzi_energy_dict, _, cycle_dict, _, _ = (
+            model.calc_weight_MZI_energy(
+                next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq
+            )
+        )
 
         total_cycles = 0
         for key, value in cycle_dict.items():
-            total_cycles += value[0]  
-        
+            total_cycles += value[0]
+
         acc_list = []
         total_energy_list = []
         layer_energy_list = []
@@ -336,18 +355,37 @@ def main() -> None:
                 acc = np.mean(accs)
                 acc_list.append((interv_s, interv_h_s, acc))
                 print(f"interv_s: {interv_s}, interv_h: {interv_h}, acc: {acc}")
-            layer_energy, layer_energy_breakdown, newtwork_energy_breakdown, total_energy = hw.calc_total_energy(cycle_dict, dst_scheduler, model, configs.noise.input_power_gating, configs.noise.output_power_gating)
-            mzi_total_energy, mzi_energy_dict, _, _, _, _ = model.calc_weight_MZI_energy(next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq)
+            (
+                layer_energy,
+                layer_energy_breakdown,
+                newtwork_energy_breakdown,
+                total_energy,
+            ) = hw.calc_total_energy(
+                cycle_dict,
+                dst_scheduler,
+                model,
+                configs.noise.input_power_gating,
+                configs.noise.output_power_gating,
+            )
+            mzi_total_energy, mzi_energy_dict, _, _, _, _ = (
+                model.calc_weight_MZI_energy(
+                    next(iter(test_loader))[0].shape, R=R, C=C, freq=work_freq
+                )
+            )
             for key in layer_energy:
                 layer_energy[key] += mzi_energy_dict[key]
                 layer_energy_breakdown[key]["MZI Power"] = mzi_energy_dict[key]
-             
+
             newtwork_energy_breakdown["MZI Power"] = mzi_total_energy
             total_energy += mzi_total_energy
 
-            layer_energy_np = np.array(list(layer_energy.items()), dtype='object')
-            layer_energy_breakdown_np = np.array(list(layer_energy_breakdown.items()), dtype='object')
-            newtwork_energy_breakdown_np = np.array(list(newtwork_energy_breakdown.items()), dtype='object')
+            layer_energy_np = np.array(list(layer_energy.items()), dtype="object")
+            layer_energy_breakdown_np = np.array(
+                list(layer_energy_breakdown.items()), dtype="object"
+            )
+            newtwork_energy_breakdown_np = np.array(
+                list(newtwork_energy_breakdown.items()), dtype="object"
+            )
 
             layer_energy_list.append(layer_energy_np)
             layer_energy_breakdown_list.append(layer_energy_breakdown_np)
@@ -360,17 +398,22 @@ def main() -> None:
             lg.info(newtwork_energy_breakdown)
             lg.info(total_energy)
 
-
             for layer, components in layer_energy_breakdown.items():
-                    layer_energy[layer] = layer_energy[layer]/ (cycle_dict[layer][0] / work_freq / 1e9)
-                    for component, value in components.items():
-                            components[component] = value / (cycle_dict[layer][0] / work_freq / 1e9)
+                layer_energy[layer] = layer_energy[layer] / (
+                    cycle_dict[layer][0] / work_freq / 1e9
+                )
+                for component, value in components.items():
+                    components[component] = value / (
+                        cycle_dict[layer][0] / work_freq / 1e9
+                    )
 
             for key, value in newtwork_energy_breakdown.items():
-                newtwork_energy_breakdown[key] = value / (total_cycles / work_freq / 1e9)
+                newtwork_energy_breakdown[key] = value / (
+                    total_cycles / work_freq / 1e9
+                )
 
             total_energy = total_energy / (total_cycles / work_freq / 1e9)
-            
+
             lg.info("Power Breakdown: \n")
             lg.info(layer_energy)
             lg.info(layer_energy_breakdown)
@@ -379,9 +422,13 @@ def main() -> None:
 
         acc_list = np.array(acc_list)
 
-
-        np.savetxt(f"{configs.loginfo}.csv",  acc_list, delimiter=",", fmt="%.2f")
-        np.savetxt(f"{configs.loginfo}_acc_matrix.csv",  acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]), delimiter=",", fmt="%.2f")
+        np.savetxt(f"{configs.loginfo}.csv", acc_list, delimiter=",", fmt="%.2f")
+        np.savetxt(
+            f"{configs.loginfo}_acc_matrix.csv",
+            acc_list[:, -1].reshape([-1, interv_h_s_range.shape[0]]),
+            delimiter=",",
+            fmt="%.2f",
+        )
 
     except KeyboardInterrupt:
         lg.warning("Ctrl-C Stopped")
