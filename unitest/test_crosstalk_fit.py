@@ -37,6 +37,14 @@ def linear_func(x, a):
 ## used to fit polynomial
 # xdata = np.array([7, 8, 9, 10, 12, 15, 20])
 # ydata = np.array([0.23813, 0.17764, 0.13674, 0.10934, 0.07203, 0.04148, 0.0134])
+crosstalk_coupling_factor = [
+    3.55117528e-07,
+    -1.55789201e-05,
+    -8.29631681e-06,
+    9.89616761e-03,
+    -1.76013871e-01,
+]
+
 
 df = pd.read_csv("./unitest/MZIPower.csv")
 print(df)
@@ -64,7 +72,7 @@ def poly_func(x, a, b, c, d, e):
 
 popt_poly, pcov = curve_fit(poly_func, distances[:9], gamma_list[:9])
 print("Polynomial Coefficients:", popt_poly)
-ypred1 = poly_func(distances[:9], *popt_poly)
+ypred1 = poly_func(distances[:9], *crosstalk_coupling_factor)
 print(r2_score(gamma_list[:9], ypred1))
 print(ypred1)
 print(gamma_list[:9])
