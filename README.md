@@ -3,6 +3,8 @@
 
 By [Ziang Yin](https://scopex-asu.github.io/index.html), Nicholas Gangi, Meng Zhang, [Jeff Zhang](https://search.asu.edu/profile/4346755), Rena Huang and [Jiaqi Gu](https://scopex-asu.github.io/index.html).
 
+This repo is the official implementation of ["SCATTER: Algorithm-Circuit Co-Sparse Photonic Accelerator with Thermal-Tolerant, Power-Efficient In-situ Light Redistribution"](https://arxiv.org/abs/2407.05510)
+
 
 # Introduction
 **SCATTER** is a novel algorithm-circuit co-sparse photonic accelerator featuring dynamically reconfigurable signal path via thermal-tolerant, power-efficient in-situ light redistribution and power gating. 
@@ -10,6 +12,7 @@ By [Ziang Yin](https://scopex-asu.github.io/index.html), Nicholas Gangi, Meng Zh
   <img src="figures/Teaser.jpg" width="400" height="200"/>
 
 </p>
+
 **SCATTER** is designed to overcome the limitations of
 traditional photonic accelerators with these key features: ➊ phase-agnostic incoherent photonic tensor cores for robust tensor computing; ➋ shared input modulation modules and readout circuitry to balance area, power, and control flexibility; 
 <p align="center">
@@ -84,3 +87,17 @@ efficiency.
 `> python3 scripts/MODEL/train_sparse.py`
 * Test the trained model with different hardware restriction. (Need to modify the path to trained checkpoint in the script).
 `python3 scripts/MODEL/test_main_results.py`
+
+
+# Citing SCATTER
+```
+@misc{yin2024scatteralgorithmcircuitcosparsephotonic,
+      title={SCATTER: Algorithm-Circuit Co-Sparse Photonic Accelerator with Thermal-Tolerant, Power-Efficient In-situ Light Redistribution}, 
+      author={Ziang Yin and Nicholas Gangi and Meng Zhang and Jeff Zhang and Rena Huang and Jiaqi Gu},
+      year={2024},
+      eprint={2407.05510},
+      archivePrefix={arXiv},
+      primaryClass={cs.AR},
+      url={https://arxiv.org/abs/2407.05510}, 
+}
+```
